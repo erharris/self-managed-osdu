@@ -10,6 +10,7 @@ prefix = "osdu-self"
 
 resource_tags = {
   environment = "Self Managed OSDU"
+   contact = "Erika Harris"
 }
 
 feature_flag = {
