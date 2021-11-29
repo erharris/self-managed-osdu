@@ -7,10 +7,10 @@ metadata:
 spec:
   values:
     ingress:
-      dns: osdu-self-dplbjgaf-un8o-gw.australiaeast.cloudapp.azure.com
+      dns: osdu-self-dplcggbc-y36a-gw.australiaeast.cloudapp.azure.com
     configuration:
     - service: register
-      repository: osduselfcplbjgcsr8cr.azurecr.io/register
+      repository: osduselfcplcggljwfcr.azurecr.io/register
       path: /api/register/v1/*
       probe:
         path: /api/register/v1/swagger-ui.html
@@ -33,23 +33,23 @@ spec:
           - "*/_ah/**"
       env:
       - name: spring_application_name
-        value: register
+        value: "register"
       - name: server.servlet.contextPath
-        value: /api/register/v1/
+        value: "/api/register/v1/"
       - name: server_port
-        value: 80
+        value: "80"
       - name: ACCEPT_HTTP
-        value: true
+        value: "true"
       - name: LOG_PREFIX
-        value: register
+        value: "register"
       - name: cosmosdb_database
-        value: osdu-db
+        value: "osdu-db"
       - name: RECORDS_CHANGE_PUBSUB_ENDPOINT
-        value: https://osdu-self-dplbjgaf-un8o-gw.australiaeast.cloudapp.azure.com/api/notification/v1/push-handlers/records-changed
+        value: "https://osdu-self-dplcggbc-y36a-gw.australiaeast.cloudapp.azure.com/api/notification/v1/push-handlers/records-changed"
       - name: ENTITLEMENTS_API
-        value: http://entitlements/api/entitlements/v2
+        value: "http://entitlements/api/entitlements/v2"
       - name: partition_service_endpoint
-        value: http://partition/api/partition/v1
+        value: "http://partition/api/partition/v1"
       - name: azure_istioauth_enabled
         value: "true"
       - name: azure_serviceBus_enabled

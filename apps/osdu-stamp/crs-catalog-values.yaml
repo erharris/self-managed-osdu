@@ -7,10 +7,10 @@ metadata:
 spec:
   values:
     ingress:
-      dns: osdu-self-dplbjgaf-un8o-gw.australiaeast.cloudapp.azure.com
+      dns: osdu-self-dplcggbc-y36a-gw.australiaeast.cloudapp.azure.com
     configuration:
     - service: crs-catalog
-      repository: osduselfcplbjgcsr8cr.azurecr.io/crs-catalog
+      repository: osduselfcplcggljwfcr.azurecr.io/crs-catalog
       path: /api/crs/catalog/*
       probe:
         path: /api/crs/catalog/swagger-ui.html
@@ -61,4 +61,3 @@ spec:
         secret:
           name: central-logging
           key: appinsights
-

@@ -7,10 +7,10 @@ metadata:
 spec:
   values:
     ingress:
-      dns: osdu-self-dplbjgaf-un8o-gw.australiaeast.cloudapp.azure.com
+      dns: osdu-self-dplcggbc-y36a-gw.australiaeast.cloudapp.azure.com
     configuration:
     - service: entitlements
-      repository: osduselfcplbjgcsr8cr.azurecr.io/entitlements
+      repository: osduselfcplcggljwfcr.azurecr.io/entitlements
       path: /api/entitlements/v2/*
       probe:
         path: /api/entitlements/v2/_ah/readiness_check
@@ -32,21 +32,21 @@ spec:
           - "/api/entitlements/v2/webjars/*"
       env:
       - name: spring_application_name
-        value: entitlements
+        value: "entitlements"
       - name: server.servlet.contextPath
-        value: /api/entitlements/v2/
+        value: "/api/entitlements/v2/"
       - name: LOGGING_LEVEL
-        value: INFO
+        value: "INFO"
       - name: server_port
         value: "80"
       - name: service_domain_name
-        value: contoso.com
+        value: "contoso.com"
       - name: root_data_group_quota
         value: "5000"
       - name: redis_ttl_seconds
         value: "1"
       - name: partition_service_endpoint
-        value: http://partition/api/partition/v1
+        value: "http://partition/api/partition/v1"
       - name: azure_istioauth_enabled
         value: "true"
       - name: azure_activedirectory_AppIdUri

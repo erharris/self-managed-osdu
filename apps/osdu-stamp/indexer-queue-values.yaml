@@ -8,7 +8,7 @@ spec:
   values:
     configuration:
     - service: indexer-queue
-      repository: osduselfcplbjgcsr8cr.azurecr.io/indexer-queue
+      repository: osduselfcplcggljwfcr.azurecr.io/indexer-queue
       keyvault: true
       request:
         cpu: 1000m
@@ -18,17 +18,17 @@ spec:
         memory: 2Gi
       env:
       - name: spring_application_name
-        value: indexer-queue
+        value: "indexer-queue"
       - name: server_port
-        value: 80
+        value: "80"
       - name: azure_servicebus_topic_name
-        value: recordstopic
+        value: "recordstopic"
       - name: azure_servicebus_topic_subscription
-        value: recordstopicsubscription
+        value: "recordstopicsubscription"
       - name: indexer_worker_url
-        value: http://indexer/api/indexer/v2/_dps/task-handlers/index-worker
+        value: "http://indexer/api/indexer/v2/_dps/task-handlers/index-worker"
       - name: PARTITION_API
-        value: http://partition/api/partition/v1
+        value: "http://partition/api/partition/v1"
       - name: max_concurrent_calls
         value: "32"
       - name: executor_n_threads

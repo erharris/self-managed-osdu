@@ -7,10 +7,10 @@ metadata:
 spec:
   values:
     ingress:
-      dns: osdu-self-dplbjgaf-un8o-gw.australiaeast.cloudapp.azure.com
+      dns: osdu-self-dplcggbc-y36a-gw.australiaeast.cloudapp.azure.com
     configuration:
     - service: search
-      repository: osduselfcplbjgcsr8cr.azurecr.io/search
+      repository: osduselfcplcggljwfcr.azurecr.io/search
       path: /api/search/v2/*
       probe:
         path: /api/search/v2/swagger-ui.html
@@ -34,41 +34,41 @@ spec:
           - "*/_ah/**"
       env:
       - name: spring_application_name
-        value: search
+        value: "search"
       - name: server.servlet.contextPath
-        value: /api/search/v2/
+        value: "/api/search/v2/"
       - name: server_port
-        value: 80
+        value: "80"
       - name: ACCEPT_HTTP
-        value: true
+        value: "true"
       - name: APPLICATIONINSIGHTS_CONNECTION_STRING
-        value: InstrumentationKey=45aa8f2e-9c8a-4dbc-bf9c-3c7eb56df5aa
+        value: "InstrumentationKey=8f206026-67ba-461c-a995-e198dcc17281"
       - name: cosmosdb_database
-        value: osdu-db
+        value: "osdu-db"
       - name: entitlements_service_endpoint
-        value: http://entitlements/api/entitlements/v2
+        value: "http://entitlements/api/entitlements/v2"
       - name: entitlements_service_api_key
-        value: OBSOLETE
+        value: "OBSOLETE"
       - name: ENVIRONMENT
-        value: evt
+        value: "evt"
       - name: LOG_PREFIX
-        value: search
+        value: "search"
       - name: ELASTIC_CACHE_EXPIRATION
-        value: 1
+        value: "1"
       - name: MAX_CACHE_VALUE_SIZE
-        value: 60
+        value: "60"
       - name: search_service_spring_logging_level
-        value: debug
+        value: "debug"
       - name: partition_service_endpoint
-        value: http://partition/api/partition/v1
+        value: "http://partition/api/partition/v1"
       - name: policy_enabled
         value: "false"
       - name: policy_service_endpoint
-        value: http://policy/api/policy/v1
+        value: "http://policy/api/policy/v1"
       - name: azure_istioauth_enabled
-        value: true
+        value: "true"
       - name: azure_activedirectory_AppIdUri
-        value: api://b59aa093-1907-488e-b831-d22a4df3d4be"
+        value: "api://b59aa093-1907-488e-b831-d22a4df3d4be"
       - name: KEYVAULT_URI
         config:
           name: osdu-svc-config

@@ -7,10 +7,10 @@ metadata:
 spec:
   values:
     ingress:
-      dns: osdu-self-dplbjgaf-un8o-gw.australiaeast.cloudapp.azure.com
+      dns: osdu-self-dplcggbc-y36a-gw.australiaeast.cloudapp.azure.com
     configuration:
     - service: notification
-      repository: osduselfcplbjgcsr8cr.azurecr.io/notification
+      repository: osduselfcplcggljwfcr.azurecr.io/notification
       path: /api/notification/v1/*
       probe:
         path: /api/notification/v1/swagger-ui.html
@@ -32,27 +32,27 @@ spec:
           - "*/_ah/**"
       env:
       - name: spring_application_name
-        value: notification-azure
+        value: "notification-azure"
       - name: server.servlet.contextPath
-        value: /api/notification/v1/
+        value: "/api/notification/v1/"
       - name: server_port
-        value: 80
+        value: "80"
       - name: ACCEPT_HTTP
-        value: true
+        value: "true"
       - name: cosmosdb_database
-        value: osdu-db
+        value: "osdu-db"
       - name: entitlements_service_endpoint
-        value: http://entitlements/api/entitlements/v2
+        value: "http://entitlements/api/entitlements/v2"
       - name: registeration_service_endpoint
-        value: http://register/api/register/v1
+        value: "http://register/api/register/v1"
       - name: maxCacheSize
         value:  "20"
       - name: partition_service_endpoint
-        value: http://partition/api/partition/v1
+        value: "http://partition/api/partition/v1"
       - name: policy_enabled
         value: "false"
       - name: policy_service_endpoint
-        value: http://policy/api/policy/v1
+        value: "http://policy/api/policy/v1"
       - name: azure_istioauth_enabled
         value: "true"
       - name: LOG_PREFIX

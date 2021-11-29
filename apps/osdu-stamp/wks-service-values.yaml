@@ -8,25 +8,25 @@ spec:
   values:
     configuration:
     - scaledObject: wks
-      repository: osduselfcplbjgcsr8cr.azurecr.io/wks
+      repository: osduselfcplcggljwfcr.azurecr.io/wks
       servicebusSubscription: eg_sb_wkssubscription
       servicebusTopic: recordstopiceg
       keyvault: true
       env:
       - name: spring_application_name
-        value: wks
+        value: "wks"
       - name: server_port
-        value: 80
+        value: "80"
       - name: cosmosdb_database
-        value: osdu-db
+        value: "osdu-db"
       - name: servicebus_topic_name
-        value: recordstopiceg
+        value: "recordstopiceg"
       - name: servicebus_topic_subscription
-        value: eg_sb_wkssubscription
+        value: "eg_sb_wkssubscription"
       - name: storage_container
-        value: osdu-wks-mappings
+        value: "osdu-wks-mappings"
       - name: partition_service_endpoint
-        value: http://partition/api/partition/v1
+        value: "http://partition/api/partition/v1"
       - name: storage_service_endpoint
         value: "http://storage/api/storage/v2"
       - name: schema_service_endpoint
@@ -34,7 +34,7 @@ spec:
       - name: search_service_endpoint
         value: "http://search/api/search/v2"
       - name: default_tenant
-        value:
+        value: "opendes"
       - name: max_concurrent_calls
         value: "32"
       - name: executor_n_threads

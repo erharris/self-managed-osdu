@@ -7,10 +7,10 @@ metadata:
 spec:
   values:
     ingress:
-      dns: osdu-self-dplbjgaf-un8o-gw.australiaeast.cloudapp.azure.com
+      dns: osdu-self-dplcggbc-y36a-gw.australiaeast.cloudapp.azure.com
     configuration:
     - service: partition
-      repository: osduselfcplbjgcsr8cr.azurecr.io/partition
+      repository: osduselfcplcggljwfcr.azurecr.io/partition
       path: /api/partition/v1/*
       probe:
         path: /actuator/health
@@ -35,15 +35,15 @@ spec:
           - "*/health"
       env:
       - name: spring_application_name
-        value: partition
+        value: "partition"
       - name: server.servlet.contextPath
-        value: /api/partition/v1/
+        value: "/api/partition/v1/"
       - name: server_port
         value: "80"
       - name: ACCEPT_HTTP
         value: "true"
       - name: partition_spring_logging_level
-        value: INFO
+        value: "INFO"
       - name: azure_activedirectory_AppIdUri
         value: "api://b59aa093-1907-488e-b831-d22a4df3d4be"
       - name: azure_activedirectory_session_stateless

@@ -2,22 +2,19 @@
 apiVersion: helm.toolkit.fluxcd.io/v2beta1
 kind: HelmRelease
 metadata:
-  name: legal-service
+  name: workflow-service
   namespace: osdu-azure
 spec:
   values:
     ingress:
       dns: osdu-self-dplcggbc-y36a-gw.australiaeast.cloudapp.azure.com
     configuration:
-    - service: legal
-      repository: osduselfcplcggljwfcr.azurecr.io/legal
-      path: /api/legal/v1/*
+    - service: workflow
+      repository: osduselfcplcggljwfcr.azurecr.io/workflow
+      path: /api/workflow/*
       probe:
-        path: /actuator/health
-        port: 8081
-        liveness:
-          delay: 250
-          seconds: 10
+        path: /api/workflow/swagger-ui.html
+        port: http
       keyvault: true
       auth:
         disable:
@@ -28,53 +25,54 @@ spec:
           - "*/swagger-ui.html"
           - "*/configuration/ui"
           - "*/configuration/security"
-          - "/api/legal/v1/swagger-resources/*"
-          - "/api/legal/v1/webjars/*"
+          - "/api/workflow/swagger-resources/*"
+          - "/api/workflow/webjars/*"
           - "*/actuator/health"
           - "*/health"
+          - "*/_ah/**"
       env:
       - name: spring_application_name
-        value: "legal"
+        value: "workflow"
       - name: server.servlet.contextPath
-        value: "/api/legal/v1/"
+        value: "/api/workflow/"
       - name: server_port
         value: "80"
       - name: ACCEPT_HTTP
         value: "true"
+      - name: LOG_PREFIX
+        value: "workflow"
       - name: cosmosdb_database
         value: "osdu-db"
-      - name: LOG_PREFIX
-        value: "legal"
-      - name: azure_storage_container_name
-        value: "legal-service-azure-configuration"
-      - name: azure_storage_enable_https
-        value: "true"
-      - name: legal_service_region
-        value: "us"
-      - name: servicebus_topic_name
-        value: "legaltags"
-      - name: entitlements_service_endpoint
-        value: "http://entitlements/api/entitlements/v2"
-      - name: entitlements_service_api_key
-        value: "OBSOLETE"
       - name: partition_service_endpoint
         value: "http://partition/api/partition/v1"
+      - name: OSDU_ENTITLEMENTS_URL
+        value: "http://entitlements/api/entitlements/v2"
+      - name: OSDU_ENTITLEMENTS_APPKEY
+        value: "OBSOLETE"
+      - name: OSDU_AIRFLOW_URL
+        value: "http://airflow-web.airflow.svc.cluster.local:8080/airflow"
+      - name: OSDU_AIRFLOW_USERNAME
+        value: "admin"
       - name: azure_istioauth_enabled
         value: "true"
-      - name: SPRING_CONFIG_NAME
-        value: "common,application"
       - name: azure_activedirectory_AppIdUri
         value: "api://b59aa093-1907-488e-b831-d22a4df3d4be"
       - name: azure_paas_podIdentity_isEnabled
         value: "false"
+      - name: dp_airflow_for_system_dag
+        value: "false"
+      - name: ignore_dagContent
+        value: "false"
+      - name: cosmosdb_system_database
+        value: "osdu-system-db"
+      - name: authorizeAPI
+        value: "http://entitlements/api/entitlements/v2"
+      - name: authorizeAPIKey
+        value: "OBSOLETE"
       - name: KEYVAULT_URI
         config:
           name: osdu-svc-config
           key: ENV_KEYVAULT
-      - name: REDIS_DATABASE
-        config:
-          name: osdu-svc-config
-          key: REDIS_DB_LEGAL
       - name: aad_client_id
         secret:
           name: active-directory
@@ -83,3 +81,15 @@ spec:
         secret:
           name: central-logging
           key: appinsights
+      - name: OSDU_AIRFLOW_PASSWORD
+        secret:
+          name: airflow
+          key: admin-password
+      - name: AIRFLOW_STORAGE_ACCOUNT_NAME
+        secret:
+          name: airflow
+          key: azurestorageaccountname
+      - name: AIRFLOW_STORAGE_ACCOUNT_KEY
+        secret:
+          name: airflow
+          key: azurestorageaccountkey
