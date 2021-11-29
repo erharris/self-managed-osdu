@@ -4,9 +4,12 @@ on:
   workflow_dispatch:
 
 env:
+  CLI_VERSION: 2.30.0
+
   CONTROLPLANE_WORKSPACE: "cpl-${{ secrets.RAND }}"
   DATAPLANE_WORKSPACE: "dpl-${{ secrets.RAND }}"
   PARTITION_WORKSPACE: "prt-${{ secrets.RAND }}"
+  DASHBOARD_WORKSPACE: "dash-${{ secrets.RAND }}"
 
   OSDU_VERSION: 0.11.0
   PARTITION_NAME: opendes
@@ -25,7 +28,7 @@ jobs:
         uses: actions/checkout@v2
 
       - name: Azure Login
-        uses: Azure/login@v1
+        uses: Azure/login@v1.1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
@@ -46,6 +49,7 @@ jobs:
       - name: Retrieve Environment Settings
         uses: Azure/cli@1.0.4
         with:
+          azcliversion: ${{ env.CLI_VERSION }}
           inlineScript: |
             VAULT=$(az keyvault list --resource-group ${{ secrets.BUILDER_GROUP }} --query [].name -otsv)
             STORAGE=$(az keyvault secret show --id https://$VAULT.vault.azure.net/secrets/storage --query value -otsv)
@@ -89,7 +93,7 @@ jobs:
     needs: control-plane
     steps:
       - uses: actions/checkout@v2
-      - uses: Azure/login@v1
+      - uses: Azure/login@v1.1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
       - uses: docker/setup-buildx-action@v1
@@ -110,6 +114,7 @@ jobs:
       - name: Retrieve Environment Settings
         uses: Azure/cli@1.0.4
         with:
+          azcliversion: ${{ env.CLI_VERSION }}
           inlineScript: |
             VAULT=$(az keyvault list --resource-group ${{ secrets.BUILDER_GROUP }} --query [].name -otsv)
             STORAGE=$(az keyvault secret show --id https://$VAULT.vault.azure.net/secrets/storage --query value -otsv)
@@ -151,7 +156,7 @@ jobs:
     needs: data-plane
     steps:
       - uses: actions/checkout@v2
-      - uses: Azure/login@v1
+      - uses: Azure/login@v1.1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
       - uses: docker/setup-buildx-action@v1
@@ -170,6 +175,7 @@ jobs:
       - name: Retrieve Environment Settings
         uses: Azure/cli@1.0.4
         with:
+          azcliversion: ${{ env.CLI_VERSION }}
           inlineScript: |
             VAULT=$(az keyvault list --resource-group ${{ secrets.BUILDER_GROUP }} --query [].name -otsv)
             STORAGE=$(az keyvault secret show --id https://$VAULT.vault.azure.net/secrets/storage --query value -otsv)
@@ -203,12 +209,78 @@ jobs:
           rm $GITHUB_WORKSPACE/.env
         shell: bash
 
+  dashboard:
+    name: Provision - Dashboard
+    env:
+      TEMPLATE: /osdu-azure/templates/osdu-r3-mvp/monitoring_resources
+    runs-on: ubuntu-latest
+    needs: partition
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Azure Login
+        uses: Azure/login@v1.1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
+
+      - name: Build Docker Image
+        uses: docker/build-push-action@v2
+        with:
+          push: false
+          build-args: WORKING_DIRECTORY=${{ env.TEMPLATE }}
+          tags: self-managed-osdu:${{ env.IMAGE_TAG }}
+          outputs: type=docker,dest=/tmp/self-managed-osdu.tar
+
+      - name: Load Docker Image
+        run: docker load --input /tmp/self-managed-osdu.tar
+
+      - name: Retrieve Environment Settings
+        uses: Azure/cli@1.0.4
+        with:
+          azcliversion: ${{ env.CLI_VERSION }}
+          inlineScript: |
+            VAULT=$(az keyvault list --resource-group ${{ secrets.BUILDER_GROUP }} --query [].name -otsv)
+            STORAGE=$(az keyvault secret show --id https://$VAULT.vault.azure.net/secrets/storage --query value -otsv)
+
+            cat > $GITHUB_WORKSPACE/.env << EOF
+            ## These variables support AzureRM Backend Storage State
+            ARM_TENANT_ID=$(az account show --query homeTenantId -otsv)
+            ARM_SUBSCRIPTION_ID=$(az account show --query id -otsv)
+            ARM_CLIENT_ID=$(az keyvault secret show --id https://$VAULT.vault.azure.net/secrets/terraform-id --query value -otsv)
+            ARM_CLIENT_SECRET=$(az keyvault secret show --id https://$VAULT.vault.azure.net/secrets/terraform-secret --query value -otsv)
+            ARM_ACCESS_KEY=$(az storage account keys list --resource-group ${{ secrets.BUILDER_GROUP }} --account-name $STORAGE --query '[0].value' -o tsv)
+            TF_VAR_remote_state_account=$STORAGE
+            TF_VAR_remote_state_container=remote-state-container
+
+            # Monitoring Resources
+
+
+            EOF
+
+      - name: Deploy Resources
+        run: |
+          docker run --rm --env-file $GITHUB_WORKSPACE/.env \
+            --env TF_VAR_workspace=${{ env.DASHBOARD_WORKSPACE }} \
+            --env TF_VAR_resource_group_location="${{ secrets.AZURE_LOCATION }}" \
+            --env TF_VAR_central_resources_workspace_name=${{ env.CONTROLPLANE_WORKSPACE }} \
+            --env TF_VAR_service_resources_workspace_name=${{ env.DATAPLANE_WORKSPACE }} \
+            --env TF_VAR_data_partition_resources_workspace_name=${{ env.PARTITION_WORKSPACE }} \
+            self-managed-osdu:${{ env.IMAGE_TAG }}
+
+          rm $GITHUB_WORKSPACE/.env
+        shell: bash
+
   fileshare-data:
     name: Load Data - File Shares
     runs-on: ubuntu-latest
     needs: partition
     steps:
-      - uses: Azure/login@v1
+      - uses: Azure/login@v1.1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
@@ -219,6 +291,7 @@ jobs:
           FILE_SHARE: crs
         uses: Azure/cli@1.0.4
         with:
+          azcliversion: ${{ env.CLI_VERSION }}
           inlineScript: |
             mkdir ${{ env.RUNNER_TEMP }}/results
             curl -sSL -o ${{ env.RUNNER_TEMP }}/download.gz https://community.opengroup.org/osdu/platform/system/reference/${{ env.SERVICE }}/-/archive/v${{ env.OSDU_VERSION }}/${{ env.SERVICE}}-v${{ env.OSDU_VERSION }}.tar.gz
@@ -240,6 +313,7 @@ jobs:
           FILE_SHARE: unit
         uses: Azure/cli@1.0.4
         with:
+          azcliversion: ${{ env.CLI_VERSION }}
           inlineScript: |
             mkdir ${{ env.RUNNER_TEMP }}/results
             curl -sSL -o ${{ env.RUNNER_TEMP }}/download.gz https://community.opengroup.org/osdu/platform/system/reference/${{ env.SERVICE }}/-/archive/v${{ env.OSDU_VERSION }}/${{ env.SERVICE }}-v${{ env.OSDU_VERSION }}.tar.gz
@@ -261,6 +335,7 @@ jobs:
           FILE_SHARE: crs-conversion
         uses: Azure/cli@1.0.4
         with:
+          azcliversion: ${{ env.CLI_VERSION }}
           inlineScript: |
             mkdir ${{ env.RUNNER_TEMP }}/results
             curl -sSL -o ${{ env.RUNNER_TEMP }}/download.tar.gz https://community.opengroup.org/osdu/platform/system/reference/${{ env.SERVICE }}/-/archive/v${{ env.OSDU_VERSION }}/${{ env.SERVICE }}-v${{ env.OSDU_VERSION }}.tar.gz
@@ -283,27 +358,21 @@ jobs:
           FILE_SHARE: airflowdags
         uses: Azure/cli@1.0.4
         with:
+          azcliversion: ${{ env.CLI_VERSION }}
           inlineScript: |
             mkdir ${{ env.RUNNER_TEMP }}/results
             curl -sSL -o ${{ env.RUNNER_TEMP }}/download.tar.gz https://community.opengroup.org/osdu/platform/data-flow/ingestion/${{ env.SERVICE }}/-/archive/v${{ env.OSDU_VERSION }}/${{ env.SERVICE }}-v${{ env.OSDU_VERSION }}.tar.gz
-            tar -xzvf ${{ env.RUNNER_TEMP }}/download.tar.gz -C ${{ env.RUNNER_TEMP }}/results --strip-components=1 ${{ env.SERVICE }}-v${{ env.OSDU_VERSION }}/${{ env.FOLDER }}
+            tar -xzvf ${{ env.RUNNER_TEMP }}/download.tar.gz -C ${{ env.RUNNER_TEMP }}/results --strip-components=3 ${{ env.SERVICE }}-v${{ env.OSDU_VERSION }}/${{ env.FOLDER }}
+            cd ${{ env.RUNNER_TEMP }}/results && zip -r ../manifest-ingestion-dags.zip . && cd ..
 
             GROUP=$(az group list --query "[?contains(name, 'cpl${{ secrets.RAND }}')].name" -otsv)
             ENV_VAULT=$(az keyvault list --resource-group $GROUP --query [].name -otsv)
 
-            az storage file upload-batch \
+            az storage file upload \
               --account-name $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/airflow-storage --query value -otsv) \
               --account-key $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/airflow-storage-key --query value -otsv) \
-              --destination ${{ env.FILE_SHARE }} \
-              --source ${{ env.RUNNER_TEMP }}/results \
-              --pattern "*.ini"
-
-            az storage file upload-batch \
-              --account-name $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/airflow-storage --query value -otsv) \
-              --account-key $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/airflow-storage-key --query value -otsv) \
-              --destination ${{ env.FILE_SHARE }} \
-              --source ${{ env.RUNNER_TEMP }}/results \
-              --pattern "*.py"
+              --share-name ${{ env.FILE_SHARE }} \
+              --source ${{ env.RUNNER_TEMP }}/manifest-ingestion-dags.zip
 
       - name: Checkout
         uses: actions/checkout@v2
@@ -315,6 +384,7 @@ jobs:
           FILE: Legal_COO.json
         uses: Azure/cli@1.0.4
         with:
+          azcliversion: ${{ env.CLI_VERSION }}
           inlineScript: |
             GROUP=$(az group list --query "[?contains(name, 'cpl${{ secrets.RAND }}')].name" -otsv)
             ENV_VAULT=$(az keyvault list --resource-group $GROUP --query [].name -otsv)
@@ -325,6 +395,30 @@ jobs:
               --file $GITHUB_WORKSPACE/configuration/Legal_COO.json \
               --container-name ${{ env.CONTAINER }} \
               --name ${{ env.FILE }}
+
+      - name: Upload Local DAGS
+        env:
+          FILE_SHARE: airflowdags
+        uses: Azure/cli@1.0.4
+        with:
+          azcliversion: ${{ env.CLI_VERSION }}
+          inlineScript: |
+            GROUP=$(az group list --query "[?contains(name, 'cpl${{ secrets.RAND }}')].name" -otsv)
+            ENV_VAULT=$(az keyvault list --resource-group $GROUP --query [].name -otsv)
+
+            az storage file upload-batch \
+              --account-name $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/airflow-storage --query value -otsv) \
+              --account-key $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/airflow-storage-key --query value -otsv) \
+              --destination ${{ env.FILE_SHARE }} \
+              --source $GITHUB_WORKSPACE/src/${{ env.FILE_SHARE }} \
+              --pattern "*.ini"
+
+            az storage file upload-batch \
+              --account-name $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/airflow-storage --query value -otsv) \
+              --account-key $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/airflow-storage-key --query value -otsv) \
+              --destination ${{ env.FILE_SHARE }} \
+              --source $GITHUB_WORKSPACE/src/${{ env.FILE_SHARE }} \
+              --pattern "*.py"
 
   cosmos-data:
     name: Load Data - TenantInfo
@@ -359,7 +453,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: data-plane
     steps:
-      - uses: Azure/login@v1
+      - uses: Azure/login@v1.1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
@@ -368,6 +462,7 @@ jobs:
           TABLE: PartitionInfo
         uses: Azure/cli@1.0.4
         with:
+          azcliversion: ${{ env.CLI_VERSION }}
           inlineScript: |
             GROUP=$(az group list --query "[?contains(name, 'cpl${{ secrets.RAND }}')].name" -otsv)
             STORAGE_NAME=$(az storage account list --resource-group $GROUP --query [].name -otsv)
@@ -502,22 +597,20 @@ jobs:
                 --if-exists replace --table-name $TABLE \
                 --entity PartitionKey=$PARTITION_NAME RowKey=eventgrid-gsmtopic sensitive=true value=$PARTITION_NAME-eventgrid-statuschangedtopic
 
-
-
-
   image-data:
     name: Load ACR - Images
     runs-on: ubuntu-latest
     needs: data-plane
     steps:
       - uses: actions/checkout@v2
-      - uses: Azure/login@v1
+      - uses: Azure/login@v1.1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
       - name: Retrieve Env Variables
         uses: Azure/cli@1.0.4
         with:
+          azcliversion: ${{ env.CLI_VERSION }}
           inlineScript: |
             GROUP=$(az group list --query "[?contains(name, 'cpl${{ secrets.RAND }}')].name" -otsv)
             ENV_VAULT=$(az keyvault list --resource-group $GROUP --query [].name -otsv)
@@ -533,7 +626,7 @@ jobs:
 
       - name: Custom Login HTML Page
         run: |
-          cat > src/index.html << EOF
+          cat > src/auth_token/index.html << EOF
           <!DOCTYPE html>
           <html lang="en">
           <!-- python3 -m http.server 8080 -->
@@ -697,13 +790,15 @@ jobs:
       - name: Build Docker Image - Login
         uses: Azure/cli@1.0.4
         with:
+          azcliversion: ${{ env.CLI_VERSION }}
           inlineScript: |
             REGISTRY=$(az acr list -g $GROUP --query [0].loginServer -otsv)
-            az acr build --registry $REGISTRY --image self-managed-osdu-login:latest -f src/Dockerfile src
+            az acr build --registry $REGISTRY --image self-managed-osdu-login:latest -f src/auth_token/Dockerfile src/auth_token
 
       - name: Push OSDU Images
         uses: Azure/cli@1.0.4
         with:
+          azcliversion: ${{ env.CLI_VERSION }}
           inlineScript: |
             REGISTRY=$(az acr list -g $GROUP --query [0].name -otsv)
             IMAGES=('partition' \
@@ -724,7 +819,12 @@ jobs:
                     'wks' \
                     'workflow' \
                     'wellbore-ddms' \
-                    'sdms')
+                    'sdms' \
+                    'wellbore-ddms' \
+                    'schema-load' \
+                    'csv-parser' \
+                    'segy-to-zgy-conversion-dag' \
+                    'segy-to-vds-conversion-dag' )
 
             for IMAGE in "${IMAGES[@]}"
             do
@@ -736,18 +836,22 @@ jobs:
               --force --no-wait
             done
 
+            az acr import --name $REGISTRY --source msosdu.azurecr.io/statsd:1.0.0 --image statsd:1.0.0 --force --no-wait
+            az acr import --name $REGISTRY --source msosdu.azurecr.io/airflow-function:1.0.0 --image airflow-function:1.0.0 --force --no-wait
+
   env-data:
     name: Load KV - Settings
     runs-on: ubuntu-latest
     needs: partition
     steps:
-      - uses: Azure/login@v1
+      - uses: Azure/login@v1.1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
       - name: Save Rest-Client Environment to Common Vault
         uses: Azure/cli@1.0.4
         with:
+          azcliversion: ${{ env.CLI_VERSION }}
           inlineScript: |
             DP_GROUP=$(az group list --query "[?contains(name, 'dpl${{ secrets.RAND }}')].name" -otsv |grep -v MC)
             DNS_HOST=$(az network public-ip list --resource-group $DP_GROUP --query [].dnsSettings.fqdn -otsv)
@@ -763,7 +867,7 @@ jobs:
               "OSDU_HOST": "$DNS_HOST",
               "REGION": "${{ secrets.AZURE_LOCATION }}",
               "ES_HOST": "${{ secrets.ELASTIC_ENDPOINT }}",
-              "ES_AUTH_TOKEN": "$(echo "elastic:${{ secrets.ELASTIC_PASSWORD }}" | base64)",
+              "ES_AUTH_TOKEN": "$(printf "elastic:${{ secrets.ELASTIC_PASSWORD }}" | base64)",
               "INITIAL_TOKEN": ""
             }
             EOF

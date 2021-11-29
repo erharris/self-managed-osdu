@@ -1,0 +1,2340 @@
+name: '4. Stamp Install'
+
+on:
+  workflow_dispatch:
+
+env:
+  CLI_VERSION: 2.30.0
+  CLUSTER: osdu-stamp
+
+  OSDU_VERSION: v0.11.0
+  PARTITION_NAME: opendes
+
+jobs:
+
+  flux-setup:
+    name: Gitops Configuration
+    env:
+      GITHUB_TOKEN: ${{ secrets.GH_REPO_TOKEN }}
+
+    runs-on: ubuntu-latest
+    steps:
+      - uses: Azure/login@v1.1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - uses: azure/setup-helm@v1
+
+      - name: Environment Settings
+        uses: Azure/cli@1.0.4
+        with:
+          azcliversion: ${{ env.CLI_VERSION }}
+          inlineScript: |
+            GROUP=$(az group list --query "[?contains(name, 'dpl${{ secrets.RAND }}')].name" -otsv |grep -v MC)
+            ENV_CLUSTER=$(az aks list --resource-group $GROUP --query [].name -otsv)
+            echo "CLUSTER_RESOURCE_GROUP=$GROUP" >> $GITHUB_ENV
+            echo "CLUSTER_NAME=$ENV_CLUSTER" >> $GITHUB_ENV
+
+      - name: AKS Context
+        uses: azure/aks-set-context@v1
+        with:
+          creds: '${{ secrets.AZURE_CREDENTIALS }}'
+          cluster-name: ${{ env.CLUSTER_NAME }}
+          resource-group: ${{ env.CLUSTER_RESOURCE_GROUP }}
+
+      - name: Install Flux
+        run: curl -s https://fluxcd.io/install.sh | bash;
+
+      - name: Bootstrap Flux
+        run: flux bootstrap github --owner=${{ github.repository_owner }} --repository=$(echo $GITHUB_REPOSITORY | cut -d'/' -f2	) --branch=main --path=./clusters/${{ env.CLUSTER }}
+
+      - name: GitOps Checkout
+        uses: actions/checkout@v2
+
+      - name: Retrieve Stamp Env Variables
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/clusters/$CLUSTER
+          mkdir -p $GITHUB_WORKSPACE/apps/$CLUSTER/
+
+          GROUP=$(az group list --query "[?contains(name, 'cpl${{ secrets.RAND }}')].name" -otsv)
+          ENV_VAULT=$(az keyvault list --resource-group $GROUP --query [].name -otsv)
+          REGISTRY=$(az acr list -g $GROUP --query [0].loginServer -otsv)
+          DP_GROUP=$(az group list --query "[?contains(name, 'dpl${{ secrets.RAND }}')].name" -otsv |grep -v MC)
+          DNS_HOST=$(az network public-ip list --resource-group $DP_GROUP --query [].dnsSettings.fqdn -otsv)
+
+          echo "GROUP=$GROUP" >> $GITHUB_ENV
+          echo "ENV_VAULT=$ENV_VAULT" >> $GITHUB_ENV
+          echo "REGISTRY=$REGISTRY" >> $GITHUB_ENV
+          echo "DP_GROUP=$DP_GROUP" >> $GITHUB_ENV
+          echo "DNS_HOST=$DNS_HOST" >> $GITHUB_ENV
+
+      - name: Configure Sealed Secrets
+        run: |
+          cat > $GITHUB_WORKSPACE/clusters/$CLUSTER/sealed-secrets.yaml <<EOF
+          ---
+          apiVersion: kustomize.toolkit.fluxcd.io/v1beta1
+          kind: Kustomization
+          metadata:
+            name: sealed-secrets
+            namespace: flux-system
+          spec:
+            interval: 5m0s
+            sourceRef:
+              kind: GitRepository
+              name: flux-system
+            path: ./apps/base/sealed-secrets
+            prune: true
+            validation: client
+            healthChecks:
+              - kind: Deployment
+                name: sealed-secrets
+                namespace: kube-system
+          EOF
+
+      - name: Configure OSDU Stamp
+        run: |
+          flux create source git helm-charts-azure \
+            --url https://community.opengroup.org/osdu/platform/deployment-and-operations/helm-charts-azure \
+            --interval 1m \
+            --branch release/0.12 \
+            --export > $GITHUB_WORKSPACE/clusters/$CLUSTER/helm-charts-azure.yaml
+
+          cat > $GITHUB_WORKSPACE/clusters/$CLUSTER/osdu-stamp.yaml <<EOF
+          ---
+          apiVersion: kustomize.toolkit.fluxcd.io/v1beta1
+          kind: Kustomization
+          metadata:
+            name: osdu-stamp
+            namespace: flux-system
+          spec:
+            interval: 5m0s
+            sourceRef:
+              kind: GitRepository
+              name: flux-system
+            path: ./apps/$CLUSTER/
+            prune: true
+            validation: client
+            healthChecks:
+            - kind: Deployment
+              name: env-debug
+              namespace: dev-sample
+            - kind: Deployment
+              name: istio-operator
+              namespace: istio-operator
+            - kind: Deployment
+              name: istiod
+              namespace: istio-system
+            - kind: Deployment
+              name: istio-ingressgateway
+              namespace: istio-system
+            - kind: Deployment
+              name: appinsights-statsd
+              namespace: airflow
+            - kind: Deployment
+              name: log-processor
+              namespace: airflow
+            - kind: Deployment
+              name: default
+              namespace: osdu-azure
+            - kind: Deployment
+              name: token
+              namespace: dev-sample
+            - kind: Deployment
+              name: partition
+              namespace: osdu-azure
+            - kind: Deployment
+              name: entitlements
+              namespace: osdu-azure
+            - kind: Deployment
+              name: legal
+              namespace: osdu-azure
+            - kind: Deployment
+              name: storage
+              namespace: osdu-azure
+            - kind: Deployment
+              name: schema
+              namespace: osdu-azure
+            - kind: Deployment
+              name: file
+              namespace: osdu-azure
+            - kind: Deployment
+              name: dataset
+              namespace: osdu-azure
+            - kind: Deployment
+              name: indexer
+              namespace: osdu-azure
+            - kind: Deployment
+              name: indexer-queue
+              namespace: osdu-azure
+            - kind: Deployment
+              name: search
+              namespace: osdu-azure
+            - kind: Deployment
+              name: notification
+              namespace: osdu-azure
+            - kind: Deployment
+              name: register
+              namespace: osdu-azure
+            - kind: Deployment
+              name: unit
+              namespace: osdu-azure
+            - kind: Deployment
+              name: crs-catalog
+              namespace: osdu-azure
+            - kind: Deployment
+              name: crs-conversion
+              namespace: osdu-azure
+            - kind: Deployment
+              name: wks
+              namespace: osdu-azure
+            - kind: Deployment
+              name: workflow
+              namespace: osdu-azure
+            - kind: Deployment
+              name: seismic-ddms
+              namespace: ddms-seismic
+            - kind: Deployment
+              name: wellbore-ddms
+              namespace: ddms-wellbore
+          EOF
+
+          cat > $GITHUB_WORKSPACE/apps/$CLUSTER/kustomization.yaml << EOF
+          ---
+          apiVersion: kustomize.config.k8s.io/v1beta1
+          kind: Kustomization
+          resources:
+            - ../base/osdu-base
+            - ../base/osdu-istio
+            - ../base/osdu-airflow
+            - ../base/dev-sample
+            - ../base/osdu-azure
+            - ../base/osdu-ddms-seismic
+            - ../base/osdu-ddms-wellbore
+          patchesStrategicMerge:
+            - istio-values.yaml
+            - dev-sample-values.yaml
+            - airflow-base-values.yaml
+            - self-managed-base-values.yaml
+            - default-service-values.yaml
+            - token-service-values.yaml
+            - partition-service-values.yaml
+            - entitlement-service-values.yaml
+            - legal-service-values.yaml
+            - storage-service-values.yaml
+            - schema-service-values.yaml
+            - file-service-values.yaml
+            - dataset-service-values.yaml
+            - indexer-service-values.yaml
+            - indexer-queue-values.yaml
+            - search-service-values.yaml
+            - notification-service-values.yaml
+            - register-service-values.yaml
+            - unit-service-values.yaml
+            - crs-catalog-values.yaml
+            - crs-conversion-values.yaml
+            - wks-service-values.yaml
+            - workflow-service-values.yaml
+            - ddms-seismic-values.yaml
+            - ddms-wellbore-values.yaml
+          EOF
+
+      - name: Create Helm Values - osdu-istio
+        run: |
+          cat > $GITHUB_WORKSPACE/apps/$CLUSTER/istio-values.yaml << EOF
+          ---
+          apiVersion: helm.toolkit.fluxcd.io/v2beta1
+          kind: HelmRelease
+          metadata:
+            name: osdu-istio
+            namespace: istio-system
+          spec:
+            values:
+              global:
+                azure:
+                  tenant: $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/tenant-id --query value -otsv)
+                  appid: $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/aad-client-id --query value -otsv)
+          EOF
+
+      - name: Create Helm Values - dev-sample
+        run: |
+          cat > $GITHUB_WORKSPACE/apps/$CLUSTER/dev-sample-values.yaml << EOF
+          ---
+          apiVersion: helm.toolkit.fluxcd.io/v2beta1
+          kind: HelmRelease
+          metadata:
+            name: env-tool
+            namespace: dev-sample
+          spec:
+            values:
+              azure:
+                tenant: $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/tenant-id --query value -otsv)
+                subscription: $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/subscription-id --query value -otsv)
+                resourcegroup: $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/base-name-cr --query value -otsv)-rg
+                identity: $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/base-name-cr --query value -otsv)-osdu-identity
+                identity_id: $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/osdu-identity-id --query value -otsv)
+                keyvault: $ENV_VAULT
+                appid: $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/aad-client-id --query value -otsv)
+          EOF
+
+      - name: Create Helm Values - airflow
+        run: |
+          cat > $GITHUB_WORKSPACE/apps/$CLUSTER/airflow-base-values.yaml << EOF
+          ---
+          apiVersion: helm.toolkit.fluxcd.io/v2beta1
+          kind: HelmRelease
+          metadata:
+            name: airflow-base
+            namespace: airflow
+          spec:
+            values:
+              azure:
+                tenant: $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/tenant-id --query value -otsv)
+                subscription: $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/subscription-id --query value -otsv)
+                resourcegroup: $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/base-name-cr --query value -otsv)-rg
+                identity: $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/base-name-cr --query value -otsv)-osdu-identity
+                identity_id: $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/osdu-identity-id --query value -otsv)
+                keyvault: $ENV_VAULT
+                appid: $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/aad-client-id --query value -otsv)
+              image:
+                repository: $REGISTRY
+          EOF
+
+      - name: Create Helm Values - self-managed-base
+        run: |
+          cat > $GITHUB_WORKSPACE/apps/$CLUSTER/self-managed-base-values.yaml << EOF
+          ---
+          apiVersion: helm.toolkit.fluxcd.io/v2beta1
+          kind: HelmRelease
+          metadata:
+            name: self-managed-base
+            namespace: osdu-azure
+          spec:
+            values:
+              fullnameOverride: osdu-svc
+              azure:
+                tenant: $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/tenant-id --query value -otsv)
+                subscription: $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/subscription-id --query value -otsv)
+                resourcegroup: $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/base-name-cr --query value -otsv)-rg
+                identity: $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/base-name-cr --query value -otsv)-osdu-identity
+                identity_id: $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/osdu-identity-id --query value -otsv)
+                keyvault: $ENV_VAULT
+                appid: $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/aad-client-id --query value -otsv)
+                oidAuthEnabled: false
+              resourceLimits:
+                defaultCpuRequests: "100m"
+                defaultMemoryRequests: "800Mi"
+                defaultCpuLimits: "1000m"
+                defaultMemoryLimits: "2Gi"
+              identity:
+                name: osdu-identity
+          EOF
+
+      - name: Create Helm Values - default-service
+        run: |
+          cat > $GITHUB_WORKSPACE/apps/$CLUSTER/default-service-values.yaml << EOF
+          ---
+          apiVersion: helm.toolkit.fluxcd.io/v2beta1
+          kind: HelmRelease
+          metadata:
+            name: default-service
+            namespace: osdu-azure
+          spec:
+            values:
+              ingress:
+                dns: $DNS_HOST
+              configuration:
+              - service: default
+                repository: neilpeterson/aks-helloworld
+                tag: v1
+                path: /*
+                replicaCount: 1
+                env:
+                - name: TITLE
+                  value: "Self Managed OSDU - (v0.11)"
+          EOF
+
+      - name: Create Helm Values - token-service
+        run: |
+          cat > $GITHUB_WORKSPACE/apps/$CLUSTER/token-service-values.yaml << EOF
+          ---
+          apiVersion: helm.toolkit.fluxcd.io/v2beta1
+          kind: HelmRelease
+          metadata:
+            name: token-service
+            namespace: dev-sample
+          spec:
+            values:
+              ingress:
+                dns: $DNS_HOST
+              configuration:
+              - service: token
+                repository: $REGISTRY/self-managed-osdu-login
+                tag: latest
+                path: /login/*
+                replicaCount: 1
+          EOF
+
+      - name: Create Helm Values - partition-service
+        run: |
+          cat > $GITHUB_WORKSPACE/apps/$CLUSTER/partition-service-values.yaml << EOF
+          ---
+          apiVersion: helm.toolkit.fluxcd.io/v2beta1
+          kind: HelmRelease
+          metadata:
+            name: partition-service
+            namespace: osdu-azure
+          spec:
+            values:
+              ingress:
+                dns: $DNS_HOST
+              configuration:
+              - service: partition
+                repository: $REGISTRY/partition
+                path: /api/partition/v1/*
+                probe:
+                  path: /actuator/health
+                  port: 8081
+                  liveness:
+                    delay: 250
+                    seconds: 10
+                keyvault: true
+                auth:
+                  disable:
+                    - "/"
+                    - "*/index.html"
+                    - "*/v1/api-docs"
+                    - "*/configuration/ui"
+                    - "*/configuration/security"
+                    - "*/swagger"
+                    - "*/swagger-ui.html"
+                    - "*/swagger-resources"
+                    - "/api/partition/v1/swagger-resources/*"
+                    - "/api/partition/v1/webjars/*"
+                    - "*/actuator/health"
+                    - "*/health"
+                env:
+                - name: spring_application_name
+                  value: "partition"
+                - name: server.servlet.contextPath
+                  value: "/api/partition/v1/"
+                - name: server_port
+                  value: "80"
+                - name: ACCEPT_HTTP
+                  value: "true"
+                - name: partition_spring_logging_level
+                  value: "INFO"
+                - name: azure_activedirectory_AppIdUri
+                  value: "api://$(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/aad-client-id --query value -otsv)"
+                - name: azure_activedirectory_session_stateless
+                  value: "false"
+                - name: azure_paas_podIdentity_isEnabled
+                  value: "true"
+                - name: azure_istioauth_enabled
+                  value: "true"
+                - name: KEYVAULT_URI
+                  config:
+                    name: osdu-svc-config
+                    key: ENV_KEYVAULT
+                - name: REDIS_DATABASE
+                  config:
+                    name: osdu-svc-config
+                    key: REDIS_DB_PARTITION
+                - name: appinsights_key
+                  secret:
+                    name: central-logging
+                    key: appinsights
+                - name: aad_client_id
+                  secret:
+                    name: active-directory
+                    key: application-appid
+          EOF
+
+      - name: Create Helm Values - entitlement-service
+        run: |
+          cat > $GITHUB_WORKSPACE/apps/$CLUSTER/entitlement-service-values.yaml << EOF
+          ---
+          apiVersion: helm.toolkit.fluxcd.io/v2beta1
+          kind: HelmRelease
+          metadata:
+            name: entitlement-service
+            namespace: osdu-azure
+          spec:
+            values:
+              ingress:
+                dns: $DNS_HOST
+              configuration:
+              - service: entitlements
+                repository: $REGISTRY/entitlements
+                path: /api/entitlements/v2/*
+                probe:
+                  path: /api/entitlements/v2/_ah/readiness_check
+                  port: http
+                keyvault: true
+                auth:
+                  disable:
+                    - "/"
+                    - "*/index.html"
+                    - "*/v2/api-docs"
+                    - "*/swagger-resources"
+                    - "*/swagger-ui.html"
+                    - "*/actuator/health"
+                    - "*/health"
+                    - "*/configuration/ui"
+                    - "*/configuration/security"
+                    - "/api/entitlements/v2/info"
+                    - "/api/entitlements/v2/swagger-resources/*"
+                    - "/api/entitlements/v2/webjars/*"
+                env:
+                - name: spring_application_name
+                  value: "entitlements"
+                - name: server.servlet.contextPath
+                  value: "/api/entitlements/v2/"
+                - name: LOGGING_LEVEL
+                  value: "INFO"
+                - name: server_port
+                  value: "80"
+                - name: service_domain_name
+                  value: "contoso.com"
+                - name: root_data_group_quota
+                  value: "5000"
+                - name: redis_ttl_seconds
+                  value: "1"
+                - name: partition_service_endpoint
+                  value: "http://partition/api/partition/v1"
+                - name: azure_istioauth_enabled
+                  value: "true"
+                - name: azure_activedirectory_AppIdUri
+                  value: "api://$(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/aad-client-id --query value -otsv)"
+                - name: azure_paas_podIdentity_isEnabled
+                  value: "false"
+                - name: KEYVAULT_URI
+                  config:
+                    name: osdu-svc-config
+                    key: ENV_KEYVAULT
+                - name: aad_client_id
+                  secret:
+                    name: active-directory
+                    key: application-appid
+                - name: appinsights_key
+                  secret:
+                    name: central-logging
+                    key: appinsights
+          EOF
+
+      - name: Create Helm Values - legal-service
+        run: |
+          cat > $GITHUB_WORKSPACE/apps/$CLUSTER/legal-service-values.yaml << EOF
+          ---
+          apiVersion: helm.toolkit.fluxcd.io/v2beta1
+          kind: HelmRelease
+          metadata:
+            name: legal-service
+            namespace: osdu-azure
+          spec:
+            values:
+              ingress:
+                dns: $DNS_HOST
+              configuration:
+              - service: legal
+                repository: $REGISTRY/legal
+                path: /api/legal/v1/*
+                probe:
+                  path: /actuator/health
+                  port: 8081
+                  liveness:
+                    delay: 250
+                    seconds: 10
+                keyvault: true
+                auth:
+                  disable:
+                    - "/"
+                    - "*/index.html"
+                    - "*/v2/api-docs"
+                    - "*/swagger-resources"
+                    - "*/swagger-ui.html"
+                    - "*/configuration/ui"
+                    - "*/configuration/security"
+                    - "/api/legal/v1/swagger-resources/*"
+                    - "/api/legal/v1/webjars/*"
+                    - "*/actuator/health"
+                    - "*/health"
+                env:
+                - name: spring_application_name
+                  value: "legal"
+                - name: server.servlet.contextPath
+                  value: "/api/legal/v1/"
+                - name: server_port
+                  value: "80"
+                - name: ACCEPT_HTTP
+                  value: "true"
+                - name: cosmosdb_database
+                  value: "osdu-db"
+                - name: LOG_PREFIX
+                  value: "legal"
+                - name: azure_storage_container_name
+                  value: "legal-service-azure-configuration"
+                - name: azure_storage_enable_https
+                  value: "true"
+                - name: legal_service_region
+                  value: "us"
+                - name: servicebus_topic_name
+                  value: "legaltags"
+                - name: entitlements_service_endpoint
+                  value: "http://entitlements/api/entitlements/v2"
+                - name: entitlements_service_api_key
+                  value: "OBSOLETE"
+                - name: partition_service_endpoint
+                  value: "http://partition/api/partition/v1"
+                - name: azure_istioauth_enabled
+                  value: "true"
+                - name: SPRING_CONFIG_NAME
+                  value: "common,application"
+                - name: azure_activedirectory_AppIdUri
+                  value: "api://$(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/aad-client-id --query value -otsv)"
+                - name: azure_paas_podIdentity_isEnabled
+                  value: "false"
+                - name: KEYVAULT_URI
+                  config:
+                    name: osdu-svc-config
+                    key: ENV_KEYVAULT
+                - name: REDIS_DATABASE
+                  config:
+                    name: osdu-svc-config
+                    key: REDIS_DB_LEGAL
+                - name: aad_client_id
+                  secret:
+                    name: active-directory
+                    key: application-appid
+                - name: appinsights_key
+                  secret:
+                    name: central-logging
+                    key: appinsights
+          EOF
+
+      - name: Create Helm Values - storage-service
+        run: |
+          cat > $GITHUB_WORKSPACE/apps/$CLUSTER/storage-service-values.yaml << EOF
+          ---
+          apiVersion: helm.toolkit.fluxcd.io/v2beta1
+          kind: HelmRelease
+          metadata:
+            name: storage-service
+            namespace: osdu-azure
+          spec:
+            values:
+              ingress:
+                dns: $DNS_HOST
+              configuration:
+              - service: storage
+                repository: $REGISTRY/storage
+                path: /api/storage/v2/*
+                probe:
+                  path: /actuator/health
+                  port: 8081
+                  liveness:
+                    delay: 250
+                    seconds: 10
+                keyvault: true
+                request:
+                  cpu: 500m
+                  memory: 1Gi
+                limit:
+                  cpu: 1000m
+                  memory: 4Gi
+                auth:
+                  disable:
+                    - "/"
+                    - "*/index.html"
+                    - "*/v2/api-docs"
+                    - "*/swagger-resources"
+                    - "*/swagger-ui.html"
+                    - "*/configuration/ui"
+                    - "*/configuration/security"
+                    - "/api/storage/v2/swagger-resources/*"
+                    - "/api/storage/v2/webjars/*"
+                    - "*/actuator/health"
+                    - "*/health"
+                env:
+                - name: spring_application_name
+                  value: "storage"
+                - name: server.servlet.contextPath
+                  value: "/api/storage/v2/"
+                - name: server_port
+                  value: "80"
+                - name: ACCEPT_HTTP
+                  value: "true"
+                - name: cosmosdb_database
+                  value: "osdu-db"
+                - name: servicebus_topic_name
+                  value: "recordstopic"
+                - name: legal_servicebus_topic_name
+                  value: "legaltagschangedtopiceg"
+                - name: legal_servicebus_topic_subscription
+                  value: "eg_sb_legaltagssubscription"
+                - name: entitlements_service_endpoint
+                  value: "http://entitlements/api/entitlements/v2"
+                - name: entitlements_service_api_key
+                  value: "OBSOLETE"
+                - name: legal_service_endpoint
+                  value: "http://legal/api/legal/v1"
+                - name: search_service_endpoint
+                  value: "http://legal/api/legal/v1"
+                - name: partition_service_endpoint
+                  value: "http://partition/api/partition/v1"
+                - name: crs_conversion_service_endpoint
+                  value: http://crs-conversion-service/api/crs/converter/v2
+                - name: policy_enabled
+                  value: "false"
+                - name: policy_service_endpoint
+                  value: "http://policy-service/api/policy/v1"
+                - name: schema_endpoints_disabled
+                  value: "false"
+                - name: azure_istioauth_enabled
+                  value: "true"
+                - name: azure_activedirectory_AppIdUri
+                  value: "api://$(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/aad-client-id --query value -otsv)"
+                - name: azure_paas_podIdentity_isEnabled
+                  value: "false"
+                - name: JAVA_OPTS
+                  value: "-XX:InitialRAMPercentage=25.0 -XX:MaxRAMPercentage=50.0"
+                - name: "SERVER_TOMCAT_MAXTHREADS"
+                  value: "400"
+                - name: "SERVER_TOMCAT_MINSPARETHREADS"
+                  value: "200"
+                - name: KEYVAULT_URI
+                  config:
+                    name: osdu-svc-config
+                    key: ENV_KEYVAULT
+                - name: REDIS_DATABASE
+                  config:
+                    name: osdu-svc-config
+                    key: REDIS_DB_STORAGE
+                - name: aad_client_id
+                  secret:
+                    name: active-directory
+                    key: application-appid
+                - name: appinsights_key
+                  secret:
+                    name: central-logging
+                    key: appinsights
+          EOF
+
+      - name: Create Helm Values - schema-service
+        run: |
+          cat > $GITHUB_WORKSPACE/apps/$CLUSTER/schema-service-values.yaml << EOF
+          ---
+          apiVersion: helm.toolkit.fluxcd.io/v2beta1
+          kind: HelmRelease
+          metadata:
+            name: schema-service
+            namespace: osdu-azure
+          spec:
+            values:
+              ingress:
+                dns: $DNS_HOST
+              configuration:
+              - service: schema
+                repository: $REGISTRY/schema
+                path: /api/schema-service/v1/*
+                probe:
+                  path: /api/schema-service/v1/swagger-ui.html
+                  port: http
+                keyvault: true
+                auth:
+                  disable:
+                    - "/"
+                    - "*/index.html"
+                    - "*/v2/api-docs"
+                    - "*/swagger-resources"
+                    - "*/swagger-ui.html"
+                    - "*/configuration/ui"
+                    - "*/configuration/security"
+                    - "/api/schema-service/v1/swagger-resources/*"
+                    - "/api/schema-service/v1/webjars/*"
+                    - "*/actuator/health"
+                    - "*/health"
+                env:
+                - name: spring_application_name
+                  value: "schema"
+                - name: server.servlet.contextPath
+                  value: "/api/schema-service/v1/"
+                - name: server_port
+                  value: "80"
+                - name: ACCEPT_HTTP
+                  value: "true"
+                - name: cosmosdb_database
+                  value: "osdu-db"
+                - name: LOG_PREFIX
+                  value: "schema"
+                - name: entitlements_service_endpoint
+                  value: "http://entitlements/api/entitlements/v2"
+                - name: entitlements_service_api_key
+                  value: "OBSOLETE"
+                - name: partition_service_endpoint
+                  value: "http://partition/api/partition/v1"
+                - name: shared_partition
+                  value: "${{ env.PARTITION_NAME }}"
+                - name: azure_istioauth_enabled
+                  value: "true"
+                - name: event_grid_enabled
+                  value: "false"
+                - name: event_grid_topic
+                  value: "schemachangedtopic"
+                - name: azure_activedirectory_AppIdUri
+                  value: "api://$(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/aad-client-id --query value -otsv)"
+                - name: azure_paas_podIdentity_isEnabled
+                  value: "false"
+                - name: KEYVAULT_URI
+                  config:
+                    name: osdu-svc-config
+                    key: ENV_KEYVAULT
+                - name: aad_client_id
+                  secret:
+                    name: active-directory
+                    key: application-appid
+                - name: appinsights_key
+                  secret:
+                    name: central-logging
+                    key: appinsights
+          EOF
+
+      - name: Create Helm Values - file-service
+        run: |
+          cat > $GITHUB_WORKSPACE/apps/$CLUSTER/file-service-values.yaml << EOF
+          ---
+          apiVersion: helm.toolkit.fluxcd.io/v2beta1
+          kind: HelmRelease
+          metadata:
+            name: file-service
+            namespace: osdu-azure
+          spec:
+            values:
+              ingress:
+                dns: $DNS_HOST
+              configuration:
+              - service: file
+                repository: $REGISTRY/file
+                path: /api/file/*
+                probe:
+                  path: /api/file/v2/readiness_check
+                  port: http
+                keyvault: true
+                auth:
+                  disable:
+                    - "/"
+                    - "*/index.html"
+                    - "*/v2/api-docs"
+                    - "*/swagger-resources"
+                    - "*/swagger-ui.html"
+                    - "*/configuration/ui"
+                    - "*/configuration/security"
+                    - "/api/file/swagger-resources/*"
+                    - "/api/file/webjars/*"
+                    - "*/actuator/health"
+                    - "*/health"
+                env:
+                - name: spring_application_name
+                  value: "file"
+                - name: server.servlet.contextPath
+                  value: "/api/file/"
+                - name: server_port
+                  value: "80"
+                - name: ACCEPT_HTTP
+                  value: "true"
+                - name: cosmosdb_database
+                  value: "osdu-db"
+                - name: LOG_PREFIX
+                  value: "file"
+                - name: osdu_entitlements_url
+                  value: "http://entitlements/api/entitlements/v2"
+                - name: osdu_entitlements_app_key
+                  value: "OBSOLETE"
+                - name: APPLICATION_PORT
+                  value: "80"
+                - name: SEARCH_HOST
+                  value: "http://search/api/search/v2"
+                - name: JAVA_HEAP_MEMORY
+                  value: "4096"
+                - name: osdu_storage_url
+                  value: "http://storage/api/storage/v2"
+                - name: partition_service_endpoint
+                  value: "http://partition/api/partition/v1"
+                - name: authorizeAPI
+                  value: "http://entitlements/api/entitlements/v2"
+                - name: azure_istioauth_enabled
+                  value: "true"
+                - name: BATCH_SIZE
+                  value: "100"
+                - name: SEARCH_QUERY_LIMIT
+                  value: "1000"
+                - name: KEYVAULT_URL
+                  config:
+                    name: osdu-svc-config
+                    key: ENV_KEYVAULT
+                - name: AZURE_CLIENT_ID
+                  secret:
+                    name: active-directory
+                    key: principal-clientid
+                - name: AZURE_CLIENT_SECRET
+                  secret:
+                    name: active-directory
+                    key: principal-clientpassword
+                - name: AZURE_TENANT_ID
+                  secret:
+                    name: active-directory
+                    key: tenantid
+                - name: AZURE_AD_APP_RESOURCE_ID
+                  secret:
+                    name: active-directory
+                    key: application-appid
+                - name: appinsights_key
+                  secret:
+                    name: central-logging
+                    key: appinsights
+          EOF
+
+      - name: Create Helm Values - dataset-service
+        run: |
+          cat > $GITHUB_WORKSPACE/apps/$CLUSTER/dataset-service-values.yaml << EOF
+          ---
+          apiVersion: helm.toolkit.fluxcd.io/v2beta1
+          kind: HelmRelease
+          metadata:
+            name: dataset-service
+            namespace: osdu-azure
+          spec:
+            values:
+              ingress:
+                dns: $DNS_HOST
+              configuration:
+              - service: dataset
+                repository: $REGISTRY/dataset
+                path: /api/dataset/*
+                probe:
+                  path: /actuator/health
+                  port: 8081
+                  liveness:
+                    delay: 250
+                    seconds: 10
+                keyvault: true
+                auth:
+                  disable:
+                    - "/"
+                    - "*/index.html"
+                    - "*/v2/api-docs"
+                    - "*/swagger-resources"
+                    - "*/swagger-ui.html"
+                    - "*/configuration/ui"
+                    - "*/configuration/security"
+                    - "/api/dataset/swagger-resources/*"
+                    - "/api/dataset/webjars/*"
+                    - "*/actuator/health"
+                    - "*/health"
+                    - "*/readiness_check"
+                    - "*/_ah/**"
+                env:
+                - name: spring_application_name
+                  value: "dataset"
+                - name: server.servlet.contextPath
+                  value: "/api/dataset/v1/"
+                - name: server_port
+                  value: "80"
+                - name: ACCEPT_HTTP
+                  value: "true"
+                - name: entitlements_service_endpoint
+                  value: "http://entitlements/api/entitlements/v2"
+                - name: entitlements_app_key
+                  value: "OBSOLETE"
+                - name: storage_service_endpoint
+                  value: "http://storage/api/storage/v2"
+                - name: partition_service_endpoint
+                  value: "http://partition/api/partition/v1"
+                - name: schema_service_endpoint
+                  value: "http://schema-service/api/schema-service/v1"
+                - name: file_service_endpoint
+                  value: "http://file/api/file/v2/files"
+                - name: azure_istioauth_enabled
+                  value: "true"
+                - name: azure_paas_podIdentity_isEnabled
+                  value: "false"
+                - name: KEYVAULT_URI
+                  config:
+                    name: osdu-svc-config
+                    key: ENV_KEYVAULT
+                - name: AZURE_APP_RESOURCE_ID
+                  secret:
+                    name: active-directory
+                    key: application-appid
+                - name: aad_client_id
+                  secret:
+                    name: active-directory
+                    key: application-appid
+                - name: azure_application_insights_instrumentation_key
+                  secret:
+                    name: central-logging
+                    key: appinsights
+          EOF
+
+      - name: Create Helm Values - indexer-service
+        run: |
+          cat > $GITHUB_WORKSPACE/apps/$CLUSTER/indexer-service-values.yaml << EOF
+          ---
+          apiVersion: helm.toolkit.fluxcd.io/v2beta1
+          kind: HelmRelease
+          metadata:
+            name: indexer-service
+            namespace: osdu-azure
+          spec:
+            values:
+              ingress:
+                dns: $DNS_HOST
+              configuration:
+              - service: indexer
+                repository: $REGISTRY/indexer
+                path: /api/indexer/v2/*
+                probe:
+                  path: /api/indexer/v2/swagger-ui.html
+                  port: http
+                keyvault: true
+                auth:
+                  disable:
+                    - "/"
+                    - "*/index.html"
+                    - "*/v2/api-docs"
+                    - "*/swagger-resources"
+                    - "*/swagger-ui.html"
+                    - "*/configuration/ui"
+                    - "*/configuration/security"
+                    - "/api/indexer/v2/swagger-resources/*"
+                    - "/api/indexer/v2/webjars/*"
+                    - "*/_dps/task-handlers"
+                    - "*/reindex"
+                    - "*/actuator/health"
+                    - "*/health"
+                env:
+                - name: spring_application_name
+                  value: "indexer"
+                - name: server.servlet.contextPath
+                  value: "/api/indexer/v2/"
+                - name: server_port
+                  value: "80"
+                - name: ACCEPT_HTTP
+                  value: "true"
+                - name: cosmosdb_database
+                  value: "osdu-db"
+                - name: servicebus_topic_name
+                  value: "indexing-progress"
+                - name: reindex_topic_name
+                  value: "recordstopic"
+                - name: entitlements_service_endpoint
+                  value: "http://entitlements/api/entitlements/v2"
+                - name: entitlements_service_api_key
+                  value: "OBSOLETE"
+                - name: schema_service_url
+                  value: "http://schema/api/schema-service/v1"
+                - name: storage_service_url
+                  value: "http://storage/api/storage/v2"
+                - name: STORAGE_SCHEMA_HOST
+                  value: "http://storage/api/storage/v2/schemas"
+                - name: STORAGE_QUERY_RECORD_FOR_CONVERSION_HOST
+                  value: "http://storage/api/storage/v2/query/records:batch"
+                - name: STORAGE_QUERY_RECORD_HOST
+                  value: "http://storage/api/storage/v2/records"
+                - name: partition_service_endpoint
+                  value: "http://partition/api/partition/v1"
+                - name: azure_istioauth_enabled
+                  value: "true"
+                - name: azure_activedirectory_AppIdUri
+                  value: "api://$(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/aad-client-id --query value -otsv)"
+                - name: azure_paas_podIdentity_isEnabled
+                  value: "false"
+                - name: KEYVAULT_URI
+                  config:
+                    name: osdu-svc-config
+                    key: ENV_KEYVAULT
+                - name: REDIS_DATABASE
+                  config:
+                    name: osdu-svc-config
+                    key: REDIS_DB_INDEXER
+                - name: aad_client_id
+                  secret:
+                    name: active-directory
+                    key: application-appid
+                - name: appinsights_key
+                  secret:
+                    name: central-logging
+                    key: appinsights
+          EOF
+
+      - name: Create Helm Values - indexer-queue
+        run: |
+          cat > $GITHUB_WORKSPACE/apps/$CLUSTER/indexer-queue-values.yaml << EOF
+          ---
+          apiVersion: helm.toolkit.fluxcd.io/v2beta1
+          kind: HelmRelease
+          metadata:
+            name: indexer-queue
+            namespace: osdu-azure
+          spec:
+            values:
+              configuration:
+              - service: indexer-queue
+                repository: $REGISTRY/indexer-queue
+                keyvault: true
+                request:
+                  cpu: 1000m
+                  memory: 2Gi
+                limit:
+                  cpu: 1000m
+                  memory: 2Gi
+                env:
+                - name: spring_application_name
+                  value: "indexer-queue"
+                - name: server_port
+                  value: "80"
+                - name: azure_servicebus_topic_name
+                  value: "recordstopic"
+                - name: azure_servicebus_topic_subscription
+                  value: "recordstopicsubscription"
+                - name: indexer_worker_url
+                  value: "http://indexer/api/indexer/v2/_dps/task-handlers/index-worker"
+                - name: PARTITION_API
+                  value: "http://partition/api/partition/v1"
+                - name: max_concurrent_calls
+                  value: "32"
+                - name: executor_n_threads
+                  value: "32"
+                - name: max_lock_renew_duration_seconds
+                  value: "600"
+                - name: max_delivery_count
+                  value: "5"
+                - name: AZURE_CLIENT_ID
+                  secret:
+                    name: active-directory
+                    key: principal-clientid
+                - name: AZURE_CLIENT_SECRET
+                  secret:
+                    name: active-directory
+                    key: principal-clientpassword
+                - name: AZURE_TENANT_ID
+                  secret:
+                    name: active-directory
+                    key: tenantid
+                - name: KEYVAULT_URI
+                  config:
+                    name: osdu-svc-config
+                    key: ENV_KEYVAULT
+                - name: aad_client_id
+                  secret:
+                    name: active-directory
+                    key: application-appid
+                - name: AZURE_APP_RESOURCE_ID
+                  secret:
+                    name: active-directory
+                    key: application-appid
+                - name: azure_application_insights_instrumentation_key
+                  secret:
+                    name: central-logging
+                    key: appinsights
+          EOF
+
+      - name: Create Helm Values - search-service
+        run: |
+
+          APP_INSIGHTS_KEY=$(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/appinsights-key --query value -otsv)
+          cat > $GITHUB_WORKSPACE/apps/$CLUSTER/search-service-values.yaml << EOF
+          ---
+          apiVersion: helm.toolkit.fluxcd.io/v2beta1
+          kind: HelmRelease
+          metadata:
+            name: search-service
+            namespace: osdu-azure
+          spec:
+            values:
+              ingress:
+                dns: $DNS_HOST
+              configuration:
+              - service: search
+                repository: $REGISTRY/search
+                path: /api/search/v2/*
+                probe:
+                  path: /api/search/v2/swagger-ui.html
+                  port: http
+                keyvault: true
+                request:
+                  cpu: 500m
+                auth:
+                  disable:
+                    - "/"
+                    - "*/index.html"
+                    - "*/v2/api-docs"
+                    - "*/swagger-resources"
+                    - "*/swagger-ui.html"
+                    - "*/configuration/ui"
+                    - "*/configuration/security"
+                    - "/api/search/v2/swagger-resources/*"
+                    - "/api/search/v2/webjars/*"
+                    - "*/actuator/health"
+                    - "*/health"
+                    - "*/_ah/**"
+                env:
+                - name: spring_application_name
+                  value: "search"
+                - name: server.servlet.contextPath
+                  value: "/api/search/v2/"
+                - name: server_port
+                  value: "80"
+                - name: ACCEPT_HTTP
+                  value: "true"
+                - name: APPLICATIONINSIGHTS_CONNECTION_STRING
+                  value: "InstrumentationKey=$APP_INSIGHTS_KEY"
+                - name: cosmosdb_database
+                  value: "osdu-db"
+                - name: entitlements_service_endpoint
+                  value: "http://entitlements/api/entitlements/v2"
+                - name: entitlements_service_api_key
+                  value: "OBSOLETE"
+                - name: ENVIRONMENT
+                  value: "evt"
+                - name: LOG_PREFIX
+                  value: "search"
+                - name: ELASTIC_CACHE_EXPIRATION
+                  value: "1"
+                - name: MAX_CACHE_VALUE_SIZE
+                  value: "60"
+                - name: search_service_spring_logging_level
+                  value: "debug"
+                - name: partition_service_endpoint
+                  value: "http://partition/api/partition/v1"
+                - name: policy_enabled
+                  value: "false"
+                - name: policy_service_endpoint
+                  value: "http://policy/api/policy/v1"
+                - name: azure_istioauth_enabled
+                  value: "true"
+                - name: azure_activedirectory_AppIdUri
+                  value: "api://$(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/aad-client-id --query value -otsv)"
+                - name: KEYVAULT_URI
+                  config:
+                    name: osdu-svc-config
+                    key: ENV_KEYVAULT
+                - name: REDIS_DATABASE
+                  config:
+                    name: osdu-svc-config
+                    key: REDIS_DB_SEARCH
+                - name: aad_client_id
+                  secret:
+                    name: active-directory
+                    key: application-appid
+                - name: appinsights_key
+                  secret:
+                    name: central-logging
+                    key: appinsights
+                - name: AZURE_CLIENT_ID
+                  secret:
+                    name: active-directory
+                    key: principal-clientid
+                - name: AZURE_CLIENT_SECRET
+                  secret:
+                    name: active-directory
+                    key: principal-clientpassword
+                - name: AZURE_TENANT_ID
+                  secret:
+                    name: active-directory
+                    key: tenantid
+          EOF
+
+      - name: Create Helm Values - notification-service
+        run: |
+          cat > $GITHUB_WORKSPACE/apps/$CLUSTER/notification-service-values.yaml << EOF
+          ---
+          apiVersion: helm.toolkit.fluxcd.io/v2beta1
+          kind: HelmRelease
+          metadata:
+            name: notification-service
+            namespace: osdu-azure
+          spec:
+            values:
+              ingress:
+                dns: $DNS_HOST
+              configuration:
+              - service: notification
+                repository: $REGISTRY/notification
+                path: /api/notification/v1/*
+                probe:
+                  path: /api/notification/v1/swagger-ui.html
+                  port: http
+                keyvault: true
+                auth:
+                  disable:
+                    - "/"
+                    - "*/index.html"
+                    - "*/v2/api-docs"
+                    - "*/swagger-resources"
+                    - "*/swagger-ui.html"
+                    - "*/configuration/ui"
+                    - "*/configuration/security"
+                    - "/api/notification/v1/swagger-resources/*"
+                    - "/api/notification/v1/webjars/*"
+                    - "*/actuator/health"
+                    - "*/health"
+                    - "*/_ah/**"
+                env:
+                - name: spring_application_name
+                  value: "notification-azure"
+                - name: server.servlet.contextPath
+                  value: "/api/notification/v1/"
+                - name: server_port
+                  value: "80"
+                - name: ACCEPT_HTTP
+                  value: "true"
+                - name: cosmosdb_database
+                  value: "osdu-db"
+                - name: entitlements_service_endpoint
+                  value: "http://entitlements/api/entitlements/v2"
+                - name: registeration_service_endpoint
+                  value: "http://register/api/register/v1"
+                - name: maxCacheSize
+                  value:  "20"
+                - name: partition_service_endpoint
+                  value: "http://partition/api/partition/v1"
+                - name: policy_enabled
+                  value: "false"
+                - name: policy_service_endpoint
+                  value: "http://policy/api/policy/v1"
+                - name: azure_istioauth_enabled
+                  value: "true"
+                - name: LOG_PREFIX
+                  value: "notification"
+                - name: service_bus_enabled
+                  value: "false"
+                - name: event_grid_to_service_bus_enabled
+                  value: "false"
+                - name: event_grid_enabled
+                  value: "true"
+                - name: initial_subscription_manager_delay_seconds
+                  value: "0"
+                - name: consecutive_subscription_manager_delay_seconds
+                  value: "1800"
+                - name: max_concurrent_calls
+                  value: "3"
+                - name: executor_n_threads
+                  value: "32"
+                - name: max_lock_renew_duration_seconds
+                  value: "2000"
+                - name: KEYVAULT_URI
+                  config:
+                    name: osdu-svc-config
+                    key: ENV_KEYVAULT
+                - name: aad_client_id
+                  secret:
+                    name: active-directory
+                    key: application-appid
+                - name: appinsights_key
+                  secret:
+                    name: central-logging
+                    key: appinsights
+          EOF
+
+      - name: Create Helm Values - register-service
+        run: |
+          cat > $GITHUB_WORKSPACE/apps/$CLUSTER/register-service-values.yaml << EOF
+          ---
+          apiVersion: helm.toolkit.fluxcd.io/v2beta1
+          kind: HelmRelease
+          metadata:
+            name: register-service
+            namespace: osdu-azure
+          spec:
+            values:
+              ingress:
+                dns: $DNS_HOST
+              configuration:
+              - service: register
+                repository: $REGISTRY/register
+                path: /api/register/v1/*
+                probe:
+                  path: /api/register/v1/swagger-ui.html
+                  port: http
+                keyvault: true
+                auth:
+                  disable:
+                    - "/"
+                    - "*/index.html"
+                    - "*/v2/api-docs"
+                    - "*/swagger-resources"
+                    - "*/swagger-ui.html"
+                    - "*/configuration/ui"
+                    - "*/configuration/security"
+                    - "/api/register/v1/swagger-resources/*"
+                    - "/api/register/v1/webjars/*"
+                    - "/api/register/v1/test/challenge/*"
+                    - "*/actuator/health"
+                    - "*/health"
+                    - "*/_ah/**"
+                env:
+                - name: spring_application_name
+                  value: "register"
+                - name: server.servlet.contextPath
+                  value: "/api/register/v1/"
+                - name: server_port
+                  value: "80"
+                - name: ACCEPT_HTTP
+                  value: "true"
+                - name: LOG_PREFIX
+                  value: "register"
+                - name: cosmosdb_database
+                  value: "osdu-db"
+                - name: RECORDS_CHANGE_PUBSUB_ENDPOINT
+                  value: "https://$DNS_HOST/api/notification/v1/push-handlers/records-changed"
+                - name: ENTITLEMENTS_API
+                  value: "http://entitlements/api/entitlements/v2"
+                - name: partition_service_endpoint
+                  value: "http://partition/api/partition/v1"
+                - name: azure_istioauth_enabled
+                  value: "true"
+                - name: azure_serviceBus_enabled
+                  value: "false"
+                - name: azure_eventGrid_enabled
+                  value: "true"
+                - name: KEYVAULT_URI
+                  config:
+                    name: osdu-svc-config
+                    key: ENV_KEYVAULT
+                - name: aad_client_id
+                  secret:
+                    name: active-directory
+                    key: application-appid
+                - name: appinsights_key
+                  secret:
+                    name: central-logging
+                    key: appinsights
+          EOF
+
+      - name: Create Helm Values - unit-service
+        run: |
+          cat > $GITHUB_WORKSPACE/apps/$CLUSTER/unit-service-values.yaml << EOF
+          ---
+          apiVersion: helm.toolkit.fluxcd.io/v2beta1
+          kind: HelmRelease
+          metadata:
+            name: unit-service
+            namespace: osdu-azure
+          spec:
+            values:
+              ingress:
+                dns: $DNS_HOST
+              configuration:
+              - service: unit
+                repository: $REGISTRY/unit
+                path: /api/unit/*
+                probe:
+                  path: /api/unit/_ah/readiness_check
+                  port: http
+                keyvault: true
+                auth:
+                  disable:
+                    - "/"
+                    - "*/index.html"
+                    - "*/v2/api-docs"
+                    - "*/swagger-resources"
+                    - "*/swagger-ui.html"
+                    - "*/configuration/ui"
+                    - "*/configuration/security"
+                    - "/api/unit/swagger-resources/*"
+                    - "/api/unit/webjars/*"
+                    - "*/actuator/health"
+                    - "*/health"
+                    - "*/_ah/**"
+                pvc:
+                - name: unit
+                  volume: shared-data
+                mount:
+                - name: shared-data
+                  path: /mnt/unit_catalogs
+                env:
+                - name: spring_application_name
+                  value: unit-service
+                - name: server.servlet.contextPath
+                  value: /api/unit/
+                - name: server_port
+                  value: 80
+                - name: ACCEPT_HTTP
+                  value: true
+                - name: ENTITLEMENT_URL
+                  value: http://entitlements/api/entitlements/v2
+                - name: azure_istioauth_enabled
+                  value: "true"
+                - name: KEYVAULT_URI
+                  config:
+                    name: osdu-svc-config
+                    key: ENV_KEYVAULT
+                - name: aad_client_id
+                  secret:
+                    name: active-directory
+                    key: application-appid
+                - name: appinsights_key
+                  secret:
+                    name: central-logging
+                    key: appinsights
+          EOF
+
+      - name: Create Helm Values - crs-catalog
+        run: |
+          cat > $GITHUB_WORKSPACE/apps/$CLUSTER/crs-catalog-values.yaml << EOF
+          ---
+          apiVersion: helm.toolkit.fluxcd.io/v2beta1
+          kind: HelmRelease
+          metadata:
+            name: crs-catalog
+            namespace: osdu-azure
+          spec:
+            values:
+              ingress:
+                dns: $DNS_HOST
+              configuration:
+              - service: crs-catalog
+                repository: $REGISTRY/crs-catalog
+                path: /api/crs/catalog/*
+                probe:
+                  path: /api/crs/catalog/swagger-ui.html
+                  port: http
+                keyvault: true
+                auth:
+                  disable:
+                    - "/"
+                    - "*/index.html"
+                    - "*/v2/api-docs"
+                    - "*/swagger-resources"
+                    - "*/swagger-ui.html"
+                    - "*/configuration/ui"
+                    - "*/configuration/security"
+                    - "/api/crs/catalog/swagger-resources/*"
+                    - "/api/crs/catalog/webjars/*"
+                    - "*/actuator/health"
+                    - "*/health"
+                    - "*/_ah/**"
+                pvc:
+                - name: crs
+                  volume: shared-data
+                mount:
+                - name: shared-data
+                  path: /mnt/crs_catalogs
+                env:
+                - name: spring_application_name
+                  value: crs-catalog-service
+                - name: server.servlet.contextPath
+                  value: /api/crs/catalog/
+                - name: server_port
+                  value: 80
+                - name: ACCEPT_HTTP
+                  value: true
+                - name: ENTITLEMENT_URL
+                  value: http://entitlements/api/entitlements/v2
+                - name: azure_istioauth_enabled
+                  value: "true"
+                - name: KEYVAULT_URI
+                  config:
+                    name: osdu-svc-config
+                    key: ENV_KEYVAULT
+                - name: aad_client_id
+                  secret:
+                    name: active-directory
+                    key: application-appid
+                - name: appinsights_key
+                  secret:
+                    name: central-logging
+                    key: appinsights
+          EOF
+
+      - name: Create Helm Values - crs-conversion
+        run: |
+          cat > $GITHUB_WORKSPACE/apps/$CLUSTER/crs-conversion-values.yaml << EOF
+          ---
+          apiVersion: helm.toolkit.fluxcd.io/v2beta1
+          kind: HelmRelease
+          metadata:
+            name: crs-conversion
+            namespace: osdu-azure
+          spec:
+            values:
+              ingress:
+                dns: $DNS_HOST
+              configuration:
+              - service: crs-conversion
+                repository: $REGISTRY/crs-conversion
+                path: /api/crs/converter/*
+                probe:
+                  path: /api/crs/converter/swagger-ui.html
+                  port: http
+                keyvault: true
+                auth:
+                  disable:
+                    - "/"
+                    - "*/index.html"
+                    - "*/v2/api-docs"
+                    - "*/swagger-resources"
+                    - "*/swagger-ui.html"
+                    - "*/configuration/ui"
+                    - "*/configuration/security"
+                    - "/api/crs/converter/swagger-resources/*"
+                    - "/api/crs/converter/webjars/*"
+                    - "*/actuator/health"
+                    - "*/health"
+                    - "*/_ah/**"
+                pvc:
+                - name: crs-conversion
+                  volume: shared-data
+                mount:
+                - name: shared-data
+                  path: /mnt/crs_conversion
+                env:
+                - name: spring_application_name
+                  value: crs-conversion-service
+                - name: server.servlet.contextPath
+                  value: /api/crs/converter/
+                - name: server_port
+                  value: 80
+                - name: ACCEPT_HTTP
+                  value: true
+                - name: ENTITLEMENT_URL
+                  value: http://entitlements/api/entitlements/v2
+                - name: ESRI_DATA_PATH
+                  value: /crs-conversion-service
+                - name: service_domain_name
+                  value: contoso.com
+                - name: SIS_DATA
+                  value: /mnt/crs_conversion/apachesis_setup/SIS_DATA
+                - name: azure_istioauth_enabled
+                  value: "true"
+                - name: KEYVAULT_URI
+                  config:
+                    name: osdu-svc-config
+                    key: ENV_KEYVAULT
+                - name: aad_client_id
+                  secret:
+                    name: active-directory
+                    key: application-appid
+                - name: appinsights_key
+                  secret:
+                    name: central-logging
+                    key: appinsights
+          EOF
+
+      - name: Create Helm Values - wks-service
+        run: |
+          cat > $GITHUB_WORKSPACE/apps/$CLUSTER/wks-service-values.yaml << EOF
+          ---
+          apiVersion: helm.toolkit.fluxcd.io/v2beta1
+          kind: HelmRelease
+          metadata:
+            name: wks-service
+            namespace: osdu-azure
+          spec:
+            values:
+              configuration:
+              - scaledObject: wks
+                repository: $REGISTRY/wks
+                servicebusSubscription: eg_sb_wkssubscription
+                servicebusTopic: recordstopiceg
+                keyvault: true
+                env:
+                - name: spring_application_name
+                  value: "wks"
+                - name: server_port
+                  value: "80"
+                - name: cosmosdb_database
+                  value: "osdu-db"
+                - name: servicebus_topic_name
+                  value: "recordstopiceg"
+                - name: servicebus_topic_subscription
+                  value: "eg_sb_wkssubscription"
+                - name: storage_container
+                  value: "osdu-wks-mappings"
+                - name: partition_service_endpoint
+                  value: "http://partition/api/partition/v1"
+                - name: storage_service_endpoint
+                  value: "http://storage/api/storage/v2"
+                - name: schema_service_endpoint
+                  value: "http://schema/api/schema-service/v1"
+                - name: search_service_endpoint
+                  value: "http://search/api/search/v2"
+                - name: default_tenant
+                  value: "${{ env.PARTITION_NAME }}"
+                - name: max_concurrent_calls
+                  value: "32"
+                - name: executor_n_threads
+                  value: "32"
+                - name: max_lock_renew_duration_seconds
+                  value: "600"
+                - name: azure_paas_podIdentity_isEnabled
+                  value: "false"
+                - name: KEYVAULT_URI
+                  config:
+                    name: osdu-svc-config
+                    key: ENV_KEYVAULT
+                - name: AZURE_CLIENT_ID
+                  secret:
+                    name: active-directory
+                    key: principal-clientid
+                - name: AZURE_CLIENT_SECRET
+                  secret:
+                    name: active-directory
+                    key: principal-clientpassword
+                - name: AZURE_TENANT_ID
+                  secret:
+                    name: active-directory
+                    key: tenantid
+                - name: aad_client_id
+                  secret:
+                    name: active-directory
+                    key: application-appid
+                - name: AZURE_APP_RESOURCE_ID
+                  secret:
+                    name: active-directory
+                    key: application-appid
+                - name: appinsights_key
+                  secret:
+                    name: central-logging
+                    key: appinsights
+          EOF
+
+      - name: Create Helm Values - workflow-service
+        run: |
+          cat > $GITHUB_WORKSPACE/apps/$CLUSTER/workflow-service-values.yaml << EOF
+          ---
+          apiVersion: helm.toolkit.fluxcd.io/v2beta1
+          kind: HelmRelease
+          metadata:
+            name: workflow-service
+            namespace: osdu-azure
+          spec:
+            values:
+              ingress:
+                dns: $DNS_HOST
+              configuration:
+              - service: workflow
+                repository: $REGISTRY/workflow
+                path: /api/workflow/*
+                probe:
+                  path: /api/workflow/swagger-ui.html
+                  port: http
+                keyvault: true
+                auth:
+                  disable:
+                    - "/"
+                    - "*/index.html"
+                    - "*/v2/api-docs"
+                    - "*/swagger-resources"
+                    - "*/swagger-ui.html"
+                    - "*/configuration/ui"
+                    - "*/configuration/security"
+                    - "/api/workflow/swagger-resources/*"
+                    - "/api/workflow/webjars/*"
+                    - "*/actuator/health"
+                    - "*/health"
+                    - "*/_ah/**"
+                env:
+                - name: spring_application_name
+                  value: "workflow"
+                - name: server.servlet.contextPath
+                  value: "/api/workflow/"
+                - name: server_port
+                  value: "80"
+                - name: ACCEPT_HTTP
+                  value: "true"
+                - name: LOG_PREFIX
+                  value: "workflow"
+                - name: cosmosdb_database
+                  value: "osdu-db"
+                - name: partition_service_endpoint
+                  value: "http://partition/api/partition/v1"
+                - name: OSDU_ENTITLEMENTS_URL
+                  value: "http://entitlements/api/entitlements/v2"
+                - name: OSDU_ENTITLEMENTS_APPKEY
+                  value: "OBSOLETE"
+                - name: OSDU_AIRFLOW_URL
+                  value: "http://airflow-web.airflow.svc.cluster.local:8080/airflow"
+                - name: OSDU_AIRFLOW_USERNAME
+                  value: "admin"
+                - name: azure_istioauth_enabled
+                  value: "true"
+                - name: azure_activedirectory_AppIdUri
+                  value: "api://$(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/aad-client-id --query value -otsv)"
+                - name: azure_paas_podIdentity_isEnabled
+                  value: "false"
+                - name: dp_airflow_for_system_dag
+                  value: "false"
+                - name: ignore_dagContent
+                  value: "false"
+                - name: cosmosdb_system_database
+                  value: "osdu-system-db"
+                - name: authorizeAPI
+                  value: "http://entitlements/api/entitlements/v2"
+                - name: authorizeAPIKey
+                  value: "OBSOLETE"
+                - name: KEYVAULT_URI
+                  config:
+                    name: osdu-svc-config
+                    key: ENV_KEYVAULT
+                - name: aad_client_id
+                  secret:
+                    name: active-directory
+                    key: application-appid
+                - name: appinsights_key
+                  secret:
+                    name: central-logging
+                    key: appinsights
+                - name: OSDU_AIRFLOW_PASSWORD
+                  secret:
+                    name: airflow
+                    key: admin-password
+                - name: AIRFLOW_STORAGE_ACCOUNT_NAME
+                  secret:
+                    name: airflow
+                    key: azurestorageaccountname
+                - name: AIRFLOW_STORAGE_ACCOUNT_KEY
+                  secret:
+                    name: airflow
+                    key: azurestorageaccountkey
+          EOF
+
+      - name: Create Helm Values - ddms-seismic
+        run: |
+          cat > $GITHUB_WORKSPACE/apps/$CLUSTER/ddms-seismic-values.yaml << EOF
+          ---
+          apiVersion: helm.toolkit.fluxcd.io/v2beta1
+          kind: HelmRelease
+          metadata:
+            name: ddms-seismic
+            namespace: ddms-seismic
+          spec:
+            values:
+              ingress:
+                dns: osdu-self-dplbdefe-w6b2-gw.westeurope.cloudapp.azure.com
+              configMap: seistore-svc-config
+              configuration:
+              - map: osdu-svc-config
+                data:
+                - name: ENV_KEYVAULT
+                  value: "https://$ENV_VAULT.vault.azure.net/"
+                - name: REDIS_DB_SDMS
+                  value: "10"
+              - map: seistore-svc-config
+                data:
+                - name: DES_SERVICE_HOST
+                  value: https://$DNS_HOST
+                - name: REDIS_INSTANCE_PORT
+                  value: 6380
+                - name: APP_ENVIRONMENT_IDENTIFIER
+                  value: cloud
+                - name: CLOUDPROVIDER
+                  value: azure
+                - name: PORT
+                  value: "80"
+              - service: seismic-ddms
+                repository: $REGISTRY/sdms
+                path: /seistore-svc/api/v3/*
+                probe:
+                  path: /seistore-svc/api/v3/svcstatus
+                  port: http
+                auth:
+                  disable:
+                    - "/"
+                    - "*/index.html"
+                    - "*/v2/api-docs"
+                    - "*/swagger"
+                    - "*/swagger-ui.html"
+                    - "*/swagger-resources"
+                    - "*/actuator/health"
+                    - "*/health"
+                    - "*/configuration/ui"
+                    - "*/configuration/security"
+                    - "/seistore-svc/api/v3/swagger-resources/*"  # CAN"T FIND SWAGGER
+                    - "/seistore-svc/api/v3/webjars/*"
+                env:
+                - name: KEYVAULT_URL
+                  config:
+                    name: osdu-svc-config
+                    key: ENV_KEYVAULT
+          EOF
+
+      - name: Create Helm Values - ddms-wellbore
+        run: |
+          cat > $GITHUB_WORKSPACE/apps/$CLUSTER/ddms-wellbore-values.yaml << EOF
+          ---
+          apiVersion: helm.toolkit.fluxcd.io/v2beta1
+          kind: HelmRelease
+          metadata:
+            name: ddms-wellbore
+            namespace: ddms-wellbore
+          spec:
+            values:
+              ingress:
+                dns: osdu-self-dplbdefe-w6b2-gw.westeurope.cloudapp.azure.com
+              configMap: wellbore-svc-config
+              azure:
+                subscription: $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/subscription-id --query value -otsv)
+                tenant: $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/tenant-id --query value -otsv)
+                vault:
+                  name: $ENV_VAULT
+                  group: $(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/base-name-cr --query value -otsv)-rg
+                  secret:
+                  - name: central-logging
+                    key: appinsights
+                    value: appinsights-key
+              configuration:
+              - map: osdu-svc-config
+                data:
+                - name: ENV_KEYVAULT
+                  value: "https://$ENV_VAULT.vault.azure.net/"
+              - map: wellbore-svc-config
+                data:
+                - name: CLOUD_PROVIDER
+                  value: az
+                - name: OPENAPI_PREFIX
+                  value: /api/os-wellbore-ddms
+                - name: SERVICE_HOST_STORAGE
+                  value: http://storage.osdu-azure/api/storage
+                - name: SERVICE_HOST_SEARCH
+                  value: http://search-service.osdu-azure/api/search
+                - name: SERVICE_HOST_PARTITION
+                  value: http://partition.osdu-azure/api/partition
+                - name: USE_PARTITION_SERVICE
+                  value: enabled
+                - name: AZ_LOGGER_LEVEL
+                  value: INFO
+              - service: wellbore-ddms
+                repository: $REGISTRY/wellbore-ddms
+                path: /api/os-wellbore-ddms/*
+                probe:
+                  path: /api/os-wellbore-ddms/healthz
+                  port: 8080
+                keyvault: true
+                auth:
+                  disable:
+                    - "/api/os-wellbore-ddms/"
+                    - "/api/os-wellbore-ddms/ddms/v2/about"
+                    - "/api/os-wellbore-ddms/docs"
+                    - "/api/os-wellbore-ddms/openapi.json"
+                env:
+                - name: SERVICE_NAME
+                  value: os-wellbore-ddms
+                - name: KEYVAULT_URL
+                  config:
+                    name: osdu-svc-config
+                    key: ENV_KEYVAULT
+                - name: AZ_AI_INSTRUMENTATION_KEY
+                  secret:
+                    name: central-logging
+                    key: appinsights
+          EOF
+
+      - name: GitOps CheckIn
+        uses: EndBug/add-and-commit@v7
+        with:
+          message: 'Initialize Software Install'
+          add: '.'
+
+
+  install-airflow:
+    name: Airflow Installation
+    env:
+      GITHUB_TOKEN: ${{ secrets.GH_REPO_TOKEN }}
+    needs: flux-setup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: Azure/login@v1.1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - uses: azure/setup-helm@v1
+      - uses: actions/checkout@v2
+
+      - name: Environment Settings
+        uses: Azure/cli@1.0.4
+        with:
+          azcliversion: ${{ env.CLI_VERSION }}
+          inlineScript: |
+            GROUP=$(az group list --query "[?contains(name, 'dpl${{ secrets.RAND }}')].name" -otsv |grep -v MC)
+            ENV_CLUSTER=$(az aks list --resource-group $GROUP --query [].name -otsv)
+            echo "CLUSTER_RESOURCE_GROUP=$GROUP" >> $GITHUB_ENV
+            echo "CLUSTER_NAME=$ENV_CLUSTER" >> $GITHUB_ENV
+
+      - name: AKS Context
+        uses: azure/aks-set-context@v1
+        with:
+          creds: '${{ secrets.AZURE_CREDENTIALS }}'
+          cluster-name: ${{ env.CLUSTER_NAME }}
+          resource-group: ${{ env.CLUSTER_RESOURCE_GROUP }}
+
+      - name: Retrieve Stamp Env Variables
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/clusters/$CLUSTER
+          mkdir -p $GITHUB_WORKSPACE/apps/$CLUSTER/
+
+          GROUP=$(az group list --query "[?contains(name, 'cpl${{ secrets.RAND }}')].name" -otsv)
+          ENV_VAULT=$(az keyvault list --resource-group $GROUP --query [].name -otsv)
+          REGISTRY=$(az acr list -g $GROUP --query [0].loginServer -otsv)
+          DP_GROUP=$(az group list --query "[?contains(name, 'dpl${{ secrets.RAND }}')].name" -otsv |grep -v MC)
+          DNS_HOST=$(az network public-ip list --resource-group $DP_GROUP --query [].dnsSettings.fqdn -otsv)
+          POSTGRES_HOST=$(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/base-name-sr --query value -otsv)-pg.postgres.database.azure.com
+          POSTGRES_USER=osdu_admin@$(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/base-name-sr --query value -otsv)-pg
+          REDIS_HOST=$(az keyvault secret show --id https://${ENV_VAULT}.vault.azure.net/secrets/base-name-sr --query value -otsv)-cache.redis.cache.windows.net
+
+          echo "GROUP=$GROUP" >> $GITHUB_ENV
+          echo "ENV_VAULT=$ENV_VAULT" >> $GITHUB_ENV
+          echo "REGISTRY=$REGISTRY" >> $GITHUB_ENV
+          echo "DP_GROUP=$DP_GROUP" >> $GITHUB_ENV
+          echo "DNS_HOST=$DNS_HOST" >> $GITHUB_ENV
+          echo "POSTGRES_HOST=$POSTGRES_HOST" >> $GITHUB_ENV
+          echo "POSTGRES_USER=$POSTGRES_USER" >> $GITHUB_ENV
+          echo "REDIS_HOST=$REDIS_HOST" >> $GITHUB_ENV
+
+      - name: Helm Values
+        run: |
+          cat > ${{ runner.temp }}/custom-values.yaml << EOF
+          airflowLogin:
+            name: admin
+          ingress:
+            enabled: true
+            web:
+              annotations:
+                kubernetes.io/ingress.class: azure/application-gateway
+                appgw.ingress.kubernetes.io/request-timeout: "300"
+                appgw.ingress.kubernetes.io/connection-draining: "true"
+                appgw.ingress.kubernetes.io/connection-draining-timeout: "30"
+                cert-manager.io/cluster-issuer: letsencrypt-prod-dns
+                cert-manager.io/acme-challenge-type: http01
+              path: "/airflow"
+              host: $DNS_HOST
+              livenessPath: "/airflow/health"
+              tls:
+                enabled: true
+                secretName: osdu-certificate
+              precedingPaths:
+                - path: "/airflow/*"
+                  serviceName: airflow-web
+                  servicePort: 8080
+          postgresql:
+            enabled: false
+          externalDatabase:
+            type: postgres
+            host: $POSTGRES_HOST
+            user: $POSTGRES_USER
+            passwordSecret: "postgres"
+            passwordSecretKey: "postgres-password"
+            port: 5432
+            properties: "?sslmode=require"
+            database: airflow
+          redis:
+            enabled: false
+          externalRedis:
+            host: $REDIS_HOST
+            passwordSecret: "redis"
+            passwordSecretKey: "redis-password"
+            port: 6380
+          dags:
+            installRequirements: true
+            persistence:
+              enabled: true
+              existingClaim: airflowdag-pvc
+              subPath: "dags"
+          web:
+            podLabels:
+              aadpodidbinding: "osdu-identity"
+            baseUrl: "http://localhost/airflow"
+          workers:
+            podLabels:
+              aadpodidbinding: "osdu-identity"
+            replicas: 2
+          flower:
+            enabled: false
+          scheduler:
+            podLabels:
+              aadpodidbinding: "osdu-identity"
+            variables: |
+              {}
+          airflow:
+            image:
+              repository: apache/airflow
+              tag: 1.10.12-python3.6
+              pullPolicy: IfNotPresent
+              pullSecret: ""
+            extraVolumeMounts:
+              - name: azure-keyvault
+                mountPath: "/mnt/azure-keyvault"
+                readOnly: true
+              - name: dags-data
+                mountPath: /opt/airflow/plugins
+                subPath: plugins
+            extraConfigmapMounts:
+              - name: remote-log-config
+                mountPath: /opt/airflow/config
+                configMap: airflow-remote-log-config
+                readOnly: true
+            extraVolumes:
+              - name: azure-keyvault
+                csi:
+                  driver: secrets-store.csi.k8s.io
+                  readOnly: true
+                  volumeAttributes:
+                    secretProviderClass: azure-keyvault
+            extraPipPackages: [
+              "flask-bcrypt==0.7.1",
+              "apache-airflow[statsd]",
+              "apache-airflow[kubernetes]",
+              "apache-airflow-backport-providers-microsoft-azure==2021.2.5",
+              "dataclasses==0.8",
+              "google-cloud-storage",
+              "python-keycloak==0.24.0",
+              "msal==1.9.0",
+              "azure-identity==1.5.0",
+              "azure-keyvault-secrets==4.2.0",
+              "azure-storage-blob",
+              "azure-servicebus==7.0.1",
+              "toposort==1.6",
+              "strict-rfc3339==0.7",
+              "jsonschema==3.2.0",
+              "pyyaml==5.4.1",
+              "requests==2.25.1",
+              "tenacity==8.0.1",
+              "https://azglobalosdutestlake.blob.core.windows.net/pythonsdk/osdu_api-0.11.0-e908cdaa.tar.gz",
+              "https://azglobalosdutestlake.blob.core.windows.net/pythonsdk/osdu_airflow-0.0.1.tar.gz"
+            ]
+            config:
+              AIRFLOW__CORE__LOGGING_LEVEL: DEBUG
+              AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "False"
+              AIRFLOW__CORE__PLUGINS_FOLDER: "/opt/airflow/plugins"
+              AIRFLOW__CELERY__SSL_ACTIVE: "True"
+              AIRFLOW__SCHEDULER__STATSD_ON: "False"
+              AIRFLOW__SCHEDULER__STATSD_HOST: "appinsights-statsd"
+              AIRFLOW__SCHEDULER__STATSD_PORT: 8125
+              AIRFLOW__SCHEDULER__STATSD_PREFIX: "osdu_airflow"
+              AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: 60
+              AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "True"
+              AIRFLOW__WEBSERVER__RBAC: "True"
+              AIRFLOW__WEBSERVER__AUTHENTICATE: "True"
+              AIRFLOW__WEBSERVER__AUTH_BACKEND: "airflow.contrib.auth.backends.password_auth"
+              AIRFLOW__WEBSERVER__ENABLE_PROXY_FIX: "True"
+              AIRFLOW__API__AUTH_BACKEND: "airflow.contrib.auth.backends.password_auth"
+              AIRFLOW__CORE__REMOTE_LOGGING: "True"
+              AIRFLOW__CORE__REMOTE_LOG_CONN_ID: "az_log"
+              AIRFLOW__CORE__REMOTE_BASE_LOG_FOLDER: "wasb-airflowlog"
+              AIRFLOW__CORE__LOGGING_CONFIG_CLASS: "log_config.DEFAULT_LOGGING_CONFIG"
+              AIRFLOW__CORE__LOG_FILENAME_TEMPLATE: "{{ run_id }}/{{ ti.dag_id }}/{{ ti.task_id }}/{{ ts }}/{% if dag_run.conf is not none and 'correlation_id' in dag_run.conf %}{{ dag_run.conf['correlation_id'] }}{% else %}None{% endif %}/{{ try_number }}.log"
+            extraEnv:
+            - name: AIRFLOW_VAR_AZURE_DNS_HOST
+              value: "$DNS_HOST"
+            - name: CLOUD_PROVIDER
+              value: "azure"
+            - name: AIRFLOW_VAR_AZURE_ENABLE_MSI
+              value: "false"
+            - name: CI_COMMIT_TAG
+              value: "v0.11.0"
+            - name: BUILD_TAG
+              value: "v0.11.0"
+            - name: AIRFLOW_VAR_KEYVAULT_URI
+              valueFrom:
+                configMapKeyRef:
+                  name: osdu-svc-config
+                  key: ENV_KEYVAULT
+            - name: AIRFLOW__CORE__FERNET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: airflow
+                  key: fernet-key
+            - name: AIRFLOW_CONN_AZ_LOG
+              valueFrom:
+                secretKeyRef:
+                  name: airflow
+                  key: remote-log-connection
+            - name: AIRFLOW_VAR_AZURE_TENANT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: active-directory
+                  key: tenantid
+            - name: AIRFLOW_VAR_AZURE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: active-directory
+                  key: principal-clientid
+            - name: AIRFLOW_VAR_AZURE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: active-directory
+                  key: principal-clientpassword
+            - name: AIRFLOW_VAR_AAD_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: active-directory
+                  key: application-appid
+            - name: AIRFLOW_VAR_APPINSIGHTS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: central-logging
+                  key: appinsights
+            - name: AIRFLOW_VAR_ENTITLEMENTS_MODULE_NAME
+              value: "entitlements_client"
+            - name: AIRFLOW_VAR_CORE__CONFIG__DATALOAD_CONFIG_PATH
+              value: "/opt/airflow/dags/configs/dataload.ini"
+            - name: AIRFLOW_VAR_CORE__SERVICE__SCHEMA__URL
+              value:  "http://schema.osdu-azure.svc.cluster.local/api/schema-service/v1/schema"
+            - name: AIRFLOW_VAR_CORE__SERVICE__SEARCH__URL
+              value: "http://search.osdu-azure.svc.cluster.local/api/search/v2/query"
+            - name: AIRFLOW_VAR_CORE__SERVICE__STORAGE__URL
+              value:  "http://storage.osdu-azure.svc.cluster.local/api/storage/v2/records"
+            - name: AIRFLOW_VAR_CORE__SERVICE__FILE__HOST
+              value: "http://file.osdu-azure.svc.cluster.local/api/file/v2"
+            - name: AIRFLOW_VAR_CORE__SERVICE__WORKFLOW__HOST
+              value: "http://workflow.osdu-azure.svc.cluster.local/api/workflow"
+            - name: AIRFLOW_VAR_CORE__SERVICE__SEARCH_WITH_CURSOR__URL
+              value: "http://search.osdu-azure.svc.cluster.local/api/search/v2/query_with_cursor"
+          EOF
+
+      - name: Namespace - Wait
+        run: |
+          echo "Checking Namespace Exists"
+          echo "----------------------------------------"
+          attempt_counter=0
+          max_attempts=30
+          until kubectl get namespace airflow
+          do
+            if [ ${attempt_counter} -eq ${max_attempts} ];then
+              echo "Deployment Image not updated, integration tests are skipped"
+              exit 1
+            fi
+            attempt_counter=$(($attempt_counter+1))
+            sleep 30
+          done
+
+          echo "Checking Namespace Exists"
+          echo "----------------------------------------"
+          attempt_counter=0
+          max_attempts=30
+          until kubectl get namespace osdu-azure
+          do
+            if [ ${attempt_counter} -eq ${max_attempts} ];then
+              echo "Deployment Image not updated, integration tests are skipped"
+              exit 1
+            fi
+            attempt_counter=$(($attempt_counter+1))
+            sleep 30
+          done
+
+      - name: Airflow Base - Wait
+        run: |
+          echo "Checking Deployment Exists"
+          echo "----------------------------------------"
+          attempt_counter=0
+          max_attempts=30
+          until kubectl get deployment appinsights-statsd -n airflow
+          do
+            if [ ${attempt_counter} -eq ${max_attempts} ];then
+              echo "Deployment Image not updated, integration tests are skipped"
+              exit 1
+            fi
+            attempt_counter=$(($attempt_counter+1))
+            sleep 30
+          done
+
+          echo "Checking Deployment Exists"
+          echo "----------------------------------------"
+          attempt_counter=0
+          max_attempts=30
+          until kubectl get deployment default -n osdu-azure
+          do
+            if [ ${attempt_counter} -eq ${max_attempts} ];then
+              echo "Deployment Image not updated, integration tests are skipped"
+              exit 1
+            fi
+            attempt_counter=$(($attempt_counter+1))
+            sleep 30
+          done
+
+
+      - name: Helm Install
+        run: |
+          helm upgrade --install airflow $GITHUB_WORKSPACE/charts/airflow --values ${{ runner.temp }}/custom-values.yaml --namespace airflow
+
+      - name: User Job - Create
+        run: |
+          cat > ${{ runner.temp }}/create-user.yaml << EOF
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: "create-user"
+          spec:
+            ttlSecondsAfterFinished: 60
+            template:
+              metadata:
+                name: "create-user"
+                labels:
+                  aadpodidbinding: "osdu-identity"
+              spec:
+                restartPolicy: Never
+                containers:
+                - name: post-install-job
+                  image: python:3.6.12-slim-buster
+                  command: ['sh','-c','pip install --user -r /scripts/requirements.txt && python /scripts/create_default_user.py']
+                  volumeMounts:
+                  - name: config-volume
+                    mountPath: /scripts
+                  - name: azure-keyvault
+                    mountPath: "/mnt/azure-keyvault"
+                    readOnly: true
+                  env:
+                  - name: DATABASE_USER
+                    value: $POSTGRES_USER
+                  - name: DATABASE_HOST
+                    value: $POSTGRES_HOST
+                  - name: DATABASE_DB
+                    value: airflow
+                  - name: DATABASE_USER_PASS
+                    valueFrom:
+                      secretKeyRef:
+                        name: postgres
+                        key: postgres-password
+                  - name: AIRFLOW_ADMIN
+                    value: admin
+                  - name: AIRFLOW_ADMIN_PASS
+                    valueFrom:
+                      secretKeyRef:
+                        name: airflow
+                        key: admin-password
+                volumes:
+                - name: config-volume
+                  configMap:
+                    name: post-install-job-config
+                - name: azure-keyvault
+                  csi:
+                    driver: secrets-store.csi.k8s.io
+                    readOnly: true
+                    volumeAttributes:
+                      secretProviderClass: azure-keyvault
+          EOF
+          kubectl apply -f ${{ runner.temp }}/create-user.yaml --namespace airflow
+
+      - name: User Job - Cleanup
+        run: |
+          while true; do
+            if kubectl wait --for=condition=complete --timeout=0 job/create-user --namespace airflow 2>/dev/null; then
+              job_result=0
+              break
+            fi
+            if kubectl wait --for=condition=failed --timeout=0 job/create-user --namespace airflow 2>/dev/null; then
+              job_result=1
+              break
+            fi
+            sleep 3
+          done
+          if [[ $job_result -eq 1 ]]; then
+              echo "Job failed!"
+              exit 1
+          fi
+          echo "Job succeeded"
+          POD=$(kubectl get pods --selector=job-name=create-user --output=jsonpath='{.items[*].metadata.name}' --namespace airflow)
+          if [ ! -z "$POD" ]
+          then
+              kubectl delete pod $POD --namespace airflow
+              echo "Pod Removed"
+          fi

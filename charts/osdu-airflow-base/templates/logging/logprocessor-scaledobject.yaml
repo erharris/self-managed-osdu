@@ -1,0 +1,17 @@
+{{- $namespace := .Release.namespace }}
+apiVersion: keda.k8s.io/v1alpha1
+kind: ScaledObject
+metadata:
+  name: azure-queue-scaledobject
+  namespace: {{ $namespace }}
+  labels:
+    deploymentName: log-processor
+spec:
+  scaleTargetRef:
+    deploymentName: log-processor
+  triggers:
+  - type: azure-queue
+    metadata:
+      queueName: airflowlogqueue
+      queueLength: "5" # default 5
+      connection: AzureWebJobsStorage
